@@ -213,7 +213,7 @@ if img is not None and d is not None:
     veg_mask = compute_vegetation_mask(ndvi,0.25)
 
     rows=[]
-    for feat in features:
+   for feat in features:
     geom = feat["geometry"]
     num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
 
