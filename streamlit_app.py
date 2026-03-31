@@ -76,7 +76,15 @@ miny = min(g.bounds[1] for g in geoms)
 maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
-aoi = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
+expand_x = 0.3   # 30 km vers l'est et l'ouest
+expand_y = 0.3   # 30 km vers le nord et le sud
+
+aoi = ee.Geometry.Rectangle([
+    minx - expand_x,
+    miny - expand_y,
+    maxx + expand_x,
+    maxy + expand_y
+])
 
 # ✅ DEBUG AOI
 st.write("DEBUG AOI (WGS84):", [minx, miny, maxx, maxy])
