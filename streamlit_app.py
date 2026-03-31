@@ -212,23 +212,23 @@ if img is not None and d is not None:
     ndvi = compute_ndvi(img)
     veg_mask = compute_vegetation_mask(ndvi,0.25)
 
-    rows=[]
-   for feat in features:
-    geom = feat["geometry"]
-    num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
+    rows = []
 
-    # ✅ DEBUG : test si Earth Engine trouve des pixels Sentinel sous la parcelle
-    try:
-        pixel_count = ndvi.sample(region=geom, scale=10).size().getInfo()
-    except Exception as e:
-        pixel_count = f"Erreur sample : {e}"
+    for feat in features:
+        geom = feat["geometry"]
+        num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
 
-    st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+        # ✅ DEBUG : test si Earth Engine trouve des pixels Sentinel sous la parcelle
+        try:
+            pixel_count = ndvi.sample(region=geom, scale=10).size().getInfo()
+        except Exception as e:
+            pixel_count = f"Erreur sample : {e}"
 
-    # ✅ Seulement après : calcul NDVI
-    nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+        st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
 
-        classe_txt,col_cl = classify_ndvi(nd_mean)
+        # ✅ Seulement après : calcul NDVI
+        nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+        classe_txt, col_cl = classify_ndvi(nd_mean)
 
         rows.append({
             "NUM_ILOT": num_ilot,
