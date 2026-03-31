@@ -10,32 +10,42 @@ def init_gee(service_account, private_key):
 
 
 # ============================================================
-# ✅ Fonction interne : détection AUTOMATIQUE de la dalle MGRS
+# ✅ Détection automatique de la dalle Sentinel-2 couvrant les parcelles
 # ============================================================
 def detect_mgrs_tile(aoi):
     """
-    Détermine automatiquement la dalle Sentinel-2 (MGRS_TILE)
-    correspondant au centroïde du SHP.
+    Retourne automatiquement la dalle Sentinel-2 (MGRS_TILE)
+    correspondant au centroïde de l'AOI.
+
+    Dataset utilisé : grille officielle Sentinel-2 MGRS
+    fournie par Google et accessible à tous :
+    "projects/sat-io/open-datasets/MGRS"
     """
-    # Centroïde WGS84 des parcelles
+
     centroid = aoi.centroid()
 
-    # Grille officielle des dalles Sentinel-2
-    # ⚠️ Très stable, maintenue par Google
-    mgrs = ee.FeatureCollection("users/soi/MGRS_tiles")
+    # ✅ Grille Sentinel-2 officielle, publique, fiable
+    mgrs = ee.FeatureCollection("projects/sat-io/open-datasets/MGRS")
 
-    # Trouver la dalle qui contient le centroïde
-    tile = mgrs.filterBounds(centroid).first().get("Name")
+    # Trouver la dalle contenant le centroïde
+    feature = mgrs.filterBounds(centroid).first()
 
-    # Renvoie une chaine EE (string)
+    # Aucun résultat : retourner None
+    if feature is None:
+        return None
+
+    # ✅ Champ correct = "name"
+    tile = feature.get("name")
     return tile
 
 
 # ============================================================
-# ✅ Récupération de la dernière tuile Sentinel-2 POUR LA DALLE CORRESPONDANTE
+# ✅ Dernière image Sentinel-2 de la dalle correspondant aux parcelles
 # ============================================================
 def get_latest_s2_image(aoi):
     tile = detect_mgrs_tile(aoi)
+    if tile is None:
+        return None, None
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
@@ -47,17 +57,19 @@ def get_latest_s2_image(aoi):
     if img is None:
         return None, None
 
-    timestamp = img.get("system:time_start").getInfo()
-    date = datetime.datetime.fromtimestamp(timestamp/1000).date()
+    ts = img.get("system:time_start").getInfo()
+    d = datetime.datetime.fromtimestamp(ts / 1000).date()
 
-    return img, date
+    return img, d
 
 
 # ============================================================
-# ✅ Lister les dates de la dalle Sentinel correspondante
+# ✅ Liste des dates disponibles pour la dalle Sentinel détectée
 # ============================================================
 def get_available_s2_dates(aoi, limit=200):
     tile = detect_mgrs_tile(aoi)
+    if tile is None:
+        return []
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
@@ -67,12 +79,11 @@ def get_available_s2_dates(aoi, limit=200):
     )
 
     timestamps = col.aggregate_array("system:time_start").getInfo()
-
     if not timestamps:
         return []
 
     dates = sorted(
-        [datetime.datetime.fromtimestamp(t/1000).date() for t in timestamps],
+        [datetime.datetime.fromtimestamp(t / 1000).date() for t in timestamps],
         reverse=True
     )
 
@@ -80,21 +91,21 @@ def get_available_s2_dates(aoi, limit=200):
 
 
 # ============================================================
-# ✅ Récupérer l'image la plus proche d'une date donnée
+# ✅ Image Sentinel la plus proche d’une date donnée
 # ============================================================
 def get_closest_s2_image(aoi, date):
-
     tile = detect_mgrs_tile(aoi)
+    if tile is None:
+        return None, None
 
-    # J+1 mois pour élargir la recherche
+    # Fenêtre de 30 jours
     start = date - datetime.timedelta(days=15)
     end   = date + datetime.timedelta(days=15)
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
         .filter(ee.Filter.eq("MGRS_TILE", tile))
-        .filterDate(start.strftime("%Y-%m-%d"),
-                    end.strftime("%Y-%m-%d"))
+        .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
         .sort("system:time_start", False)
     )
 
@@ -102,14 +113,14 @@ def get_closest_s2_image(aoi, date):
     if img is None:
         return None, None
 
-    timestamp = img.get("system:time_start").getInfo()
-    dt = datetime.datetime.fromtimestamp(timestamp/1000).date()
+    ts = img.get("system:time_start").getInfo()
+    d = datetime.datetime.fromtimestamp(ts / 1000).date()
 
-    return img, dt
+    return img, d
 
 
 # ============================================================
-# ✅ NDVI & masque vegetation (inchangés)
+# ✅ NDVI & masque NDVI > 0.25 (inchangé)
 # ============================================================
 def compute_ndvi(img):
     return img.normalizedDifference(["B8", "B4"]).rename("NDVI")
