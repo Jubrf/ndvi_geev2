@@ -2,7 +2,7 @@ import ee
 import datetime
 
 # ============================================================
-# ✅ INIT GEE
+# ✅ INIT EARTH ENGINE
 # ============================================================
 def init_gee(service_account, private_key):
     credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
@@ -10,66 +10,56 @@ def init_gee(service_account, private_key):
 
 
 # ============================================================
-# ✅ Détecter automatiquement la dalle Sentinel-2 couvrant l'AOI
+# ✅ FONCTION CLEF : TROUVER UNE IMAGE QUI A VRAIMENT DES PIXELS
 # ============================================================
-def detect_mgrs_tile(aoi):
+def _find_valid_image(aoi, collection, max_tests=15):
     """
-    Détecte automatiquement la dalle Sentinel-2 grâce à une
-    requête directe sur COPERNICUS/S2_SR, sans aucun dataset externe.
+    Parcourt les dernières images et retourne la première
+    contenant vraiment des pixels SENTINEL-2 sur la zone.
     """
-    # Centroïde de l'AOI
-    centroid = aoi.centroid()
 
-    # On prend n'importe quelle image Sentinel-2 qui couvre ce point
-    any_img = (
-        ee.ImageCollection("COPERNICUS/S2_SR")
-        .filterBounds(centroid)
-        .first()
-    )
+    imgs = collection.toList(max_tests)
 
-    # Si aucune image ne couvre — très rare
-    if any_img is None:
-        return None
+    for i in range(max_tests):
+        try:
+            img = ee.Image(imgs.get(i))
 
-    tile = any_img.get("MGRS_TILE")
-    return tile
+            # Test réel : y a-t-il des pixels B4 dans l'AOI ?
+            px = img.select("B4").sample(region=aoi, scale=20).size().getInfo()
+
+            if px > 0:
+                ts = img.get("system:time_start").getInfo()
+                d  = datetime.datetime.fromtimestamp(ts/1000).date()
+                return img, d
+
+        except Exception:
+            pass
+
+    return None, None
 
 
 # ============================================================
-# ✅ Dernière image Sentinel-2 pour la tuile détectée
+# ✅ DERNIÈRE IMAGE SENTINEL UTILE
 # ============================================================
 def get_latest_s2_image(aoi):
-    tile = detect_mgrs_tile(aoi)
-    if tile is None:
-        return None, None
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
-        .filter(ee.Filter.eq("MGRS_TILE", tile))
+        .filterBounds(aoi)
         .sort("system:time_start", False)
     )
 
-    img = col.first()
-    if img is None:
-        return None, None
-
-    ts = img.get("system:time_start").getInfo()
-    d = datetime.datetime.fromtimestamp(ts / 1000).date()
-
-    return img, d
+    return _find_valid_image(aoi, col)
 
 
 # ============================================================
-# ✅ Liste des dates disponibles
+# ✅ LISTE DES DATES
 # ============================================================
-def get_available_s2_dates(aoi, limit=200):
-    tile = detect_mgrs_tile(aoi)
-    if tile is None:
-        return []
+def get_available_s2_dates(aoi, limit=100):
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
-        .filter(ee.Filter.eq("MGRS_TILE", tile))
+        .filterBounds(aoi)
         .sort("system:time_start", False)
         .limit(limit)
     )
@@ -85,38 +75,33 @@ def get_available_s2_dates(aoi, limit=200):
 
 
 # ============================================================
-# ✅ Récupérer l'image la plus proche
+# ✅ IMAGE LA PLUS PROCHE D'UNE DATE
 # ============================================================
 def get_closest_s2_image(aoi, date):
-    tile = detect_mgrs_tile(aoi)
-    if tile is None:
-        return None, None
 
     start = date - datetime.timedelta(days=15)
     end   = date + datetime.timedelta(days=15)
 
     col = (
         ee.ImageCollection("COPERNICUS/S2_SR")
-        .filter(ee.Filter.eq("MGRS_TILE", tile))
-        .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        .filterBounds(aoi)
+        .filterDate(start.strftime("%Y-%m-%d"),
+                    end.strftime("%Y-%m-%d"))
         .sort("system:time_start", False)
     )
 
-    img = col.first()
-    if img is None:
-        return None, None
-
-    ts = img.get("system:time_start").getInfo()
-    d = datetime.datetime.fromtimestamp(ts/1000).date()
-
-    return img, d
+    return _find_valid_image(aoi, col)
 
 
 # ============================================================
-# ✅ NDVI & masque vegetation
+# ✅ NDVI
 # ============================================================
 def compute_ndvi(img):
     return img.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
+
+# ============================================================
+# ✅ Masque NDVI > 0.25
+# ============================================================
 def compute_vegetation_mask(ndvi_img, threshold=0.25):
     return ndvi_img.gt(threshold).rename("VEG")
