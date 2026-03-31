@@ -8,9 +8,9 @@ import pyproj
 from shapely.ops import transform
 
 # ============================================================
-# ✅ IMPORT UTILS
+# ✅ IMPORT UTILS (load_vector DOIT retourner un GeoDataFrame)
 # ============================================================
-from utils.vector_io import load_vector       # version normale
+from utils.vector_io import load_vector
 from utils.gee_ndvi import (
     init_gee,
     get_latest_s2_image,
@@ -37,34 +37,53 @@ uploaded = st.file_uploader("📁 Charger un SHP (ZIP uniquement)", type=["zip"]
 if not uploaded:
     st.stop()
 
-# ✅ load_vector retourne : features (list) ET crs (GeoPandas)
-features, gdf_crs = load_vector(uploaded, return_crs=True)
+# ⛔ load_vector(uploaded) doit retourner un GeoDataFrame
+gdf = load_vector(uploaded)
 
-if gdf_crs is None:
-    st.error("❌ Le SHP ne fournit PAS de CRS (pas de .prj trouvé). Impossible de reprojeter.")
+if gdf is None or gdf.empty:
+    st.error("❌ Impossible de lire le SHP (ZIP).")
     st.stop()
 
-st.success(f"✅ {len(features)} parcelles chargées")
-st.write("CRS du SHP (via .prj) :", gdf_crs)
+# ✅ Récupération CRS via GeoPandas
+if gdf.crs is None:
+    st.error("❌ Le SHP n’a pas de CRS (pas de .prj). Impossible de reprojeter.")
+    st.stop()
 
-source_crs = pyproj.CRS.from_user_input(gdf_crs)
+source_crs = pyproj.CRS.from_user_input(gdf.crs)
+st.success(f"✅ {len(gdf)} parcelles chargées")
+st.write("✅ CRS détecté depuis .prj :", source_crs)
+
+# ============================================================
+# ✅ Conversion gdf → features type "vector_io"
+# ============================================================
+features = []
+for idx, row in gdf.iterrows():
+    features.append({
+        "properties": row.drop("geometry").to_dict(),
+        "geometry": row.geometry
+    })
+
+# ============================================================
+# ✅ REPROJECTION → WGS84
+# ============================================================
 target_crs = pyproj.CRS.from_epsg(4326)
 transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True).transform
 
-# ✅ Reprojection → WGS84
 for f in features:
-    f["geometry"] = transform(transformer, f["geometry"])
+    geom = f["geometry"]
+    f["geometry"] = transform(transformer, geom)
 
 # ============================================================
 # ✅ CALCUL AOI
 # ============================================================
 geoms = [f["geometry"] for f in features]
+
 minx = min(g.bounds[0] for g in geoms)
 miny = min(g.bounds[1] for g in geoms)
 maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
-expand = 0.05
+expand = 0.05   # marge pour sécuriser la dalle Sentinel
 aoi = ee.Geometry.Rectangle([minx-expand, miny-expand, maxx+expand, maxy+expand])
 
 st.write("DEBUG AOI (WGS84):", [minx, miny, maxx, maxy])
@@ -100,7 +119,7 @@ def colorize(nd):
 # ============================================================
 # ✅ SELECTEUR DE TUILES
 # ============================================================
-def tuile_selector(label, dates_key):
+def tuile_selector(label, key_dates):
 
     mode = st.radio(
         f"Choisir la tuile ({label})",
@@ -115,12 +134,12 @@ def tuile_selector(label, dates_key):
 
     if mode == "Tuiles disponibles":
         if st.button("Lister dates"):
-            st.session_state[dates_key] = get_available_s2_dates(aoi,120)
+            st.session_state[key_dates] = get_available_s2_dates(aoi,120)
 
-        if st.session_state.get(dates_key):
+        if st.session_state.get(key_dates):
             chosen = st.selectbox(
                 "Dates disponibles",
-                st.session_state[dates_key],
+                st.session_state[key_dates],
                 format_func=lambda d: d.strftime("%Y-%m-%d")
             )
             if st.button("Charger date"):
@@ -143,17 +162,20 @@ def tuile_selector(label, dates_key):
                 .sort("system:time_start", False)
             )
             timestamps = col.aggregate_array("system:time_start").getInfo()
+
             if not timestamps:
                 st.error("❌ Aucune tuile ce mois.")
                 return None,None
 
-            dates = sorted({ datetime.datetime.fromtimestamp(t/1000, datetime.UTC).date()
-                             for t in timestamps }, reverse=True)
+            dates = sorted({
+                datetime.datetime.fromtimestamp(t/1000, datetime.UTC).date()
+                for t in timestamps
+            }, reverse=True)
 
-            st.session_state[dates_key] = dates
+            st.session_state[key_dates] = dates
 
-        if st.session_state.get(dates_key):
-            chosen = st.selectbox("Dates trouvées", st.session_state[dates_key])
+        if st.session_state.get(key_dates):
+            chosen = st.selectbox("Dates trouvées", st.session_state[key_dates])
             if st.button("Charger cette date"):
                 return get_closest_s2_image(aoi, chosen)
 
@@ -166,6 +188,7 @@ st.header("🟩 Analyse NDVI")
 
 img, d = tuile_selector("SIMPLE","dates_simple")
 
+# ✅ DEBUG Footprint
 if img:
     try:
         st.write("DEBUG Footprint Sentinel :", img.geometry().bounds().getInfo())
@@ -185,7 +208,7 @@ if img and d:
 
         geom_ee = shapely_to_ee(geom)
 
-        # ✅ DEBUG pixels pour chaque îlot
+        # ✅ DEBUG PIXELS
         try:
             px = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
         except Exception as e:
@@ -208,23 +231,24 @@ if img and d:
     st.success(f"✅ Résultats NDVI — tuile du {d}")
     st.dataframe(df)
 
-    # ========================================================
     # ✅ Carte NDVI
-    m = folium.Map(location=[(miny+maxy)/2,(minx+maxx)/2], zoom_start=13)
+    m = folium.Map(location=[(miny+maxy)/2, (minx+maxx)/2], zoom_start=13)
 
     for idx, feat in enumerate(features):
         nd = df.iloc[idx]["NDVI_moyen"]
-        color = colorize(nd)
+        col = colorize(nd)
+
+        tooltip = f"Ilot : {df.iloc[idx]['NUM_ILOT']}<br>NDVI : {fmt(nd)}"
 
         folium.GeoJson(
             feat["geometry"].__geo_interface__,
-            style_function=lambda x, col=color: {
-                "fillColor": col,
+            style_function=lambda x, color=col: {
+                "fillColor": color,
                 "color": "black",
                 "weight": 1,
                 "fillOpacity": 0.7
             },
-            tooltip=f"Ilot : {df.iloc[idx]['NUM_ILOT']}<br>NDVI : {fmt(nd)}"
+            tooltip=tooltip
         ).add_to(m)
 
     st_folium(m, height=600)
