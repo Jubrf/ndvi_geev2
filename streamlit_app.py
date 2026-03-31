@@ -64,7 +64,7 @@ features = load_vector(uploaded)
 st.success(f"{len(features)} parcelles chargées ✅")
 
 # ✅ DEBUG — vérifier géométries Shapely
-for f in features[:3]:   # seulement 3 pour éviter spam
+for f in features[:3]:
     st.write("DEBUG geom bounds :", f["geometry"].bounds)
 
 # ============================================================
@@ -101,7 +101,7 @@ def colorize(nd):
     return "#1a9850"
 
 # ============================================================
-# ✅ SELECTEUR TUILE (inchangé)
+# ✅ SELECTEUR TUILE
 # ============================================================
 def tuile_selector(label, dates_key):
 
@@ -111,14 +111,16 @@ def tuile_selector(label, dates_key):
         key=f"mode_{label}"
     )
 
+    # ✅✅ MODIFICATION 1
     if mode == "Dernière tuile":
         if st.button(f"Charger dernière tuile ({label})"):
-            return get_latest_s2_image(aoi)
+            return get_latest_s2_image(aoi, features)   # ✅ CHANGEMENT
         return None,None
 
+    # ✅✅ MODIFICATION 2
     if mode == "Tuiles disponibles":
         if st.button(f"Voir tuiles ({label})"):
-            st.session_state[dates_key] = get_available_s2_dates(aoi,120)
+            st.session_state[dates_key] = get_available_s2_dates(aoi, features)  # ✅ CHANGEMENT
 
         if st.session_state.get(dates_key):
             selected = st.selectbox(
@@ -128,10 +130,11 @@ def tuile_selector(label, dates_key):
                 format_func=lambda d: d.strftime("%Y-%m-%d")
             )
             if st.button(f"Charger cette tuile ({label})"):
-                return get_closest_s2_image(aoi,selected)
+                return get_closest_s2_image(aoi, selected, features)  # ✅ CHANGEMENT
 
         return None,None
 
+    # ✅✅ MODIFICATION 3
     if mode == "Recherche par mois":
 
         year = st.selectbox(
@@ -185,12 +188,12 @@ def tuile_selector(label, dates_key):
                 key=f"sel_month_{label}"
             )
             if st.button(f"Charger date ({label})"):
-                return get_closest_s2_image(aoi, selected)
+                return get_closest_s2_image(aoi, selected, features)   # ✅ CHANGEMENT
 
         return None,None
 
 # ============================================================
-# ✅ ANALYSE NDVI (avec DEBUG pixel)
+# ✅ ANALYSE NDVI
 # ============================================================
 st.header("🟩 Analyse NDVI — 1 Date")
 
@@ -250,7 +253,6 @@ if st.session_state.result_single is not None:
     st.success(f"✅ Résultats NDVI — {st.session_state.date_single}")
     st.dataframe(df)
 
-    # CARTE
     m = folium.Map(location=[(miny+maxy)/2,(minx+maxx)/2], zoom_start=14)
 
     for idx, feat in enumerate(features):
