@@ -210,27 +210,32 @@ if img is not None and d is not None:
     st.session_state.date_single = d
 
     ndvi = compute_ndvi(img)
-    veg_mask = compute_vegetation_mask(ndvi,0.25)
+    veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
     rows = []
 
     for feat in features:
         geom = feat["geometry"]
-        num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
+        num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
 
-    # ✅ Convertir la géométrie Shapely → EE (obligatoire)
-        geom_ee = shapely_to_ee(geom)
+        # ✅ Convertir la géométrie Shapely → EE
+        try:
+            geom_ee = shapely_to_ee(geom)
+        except Exception as e:
+            st.write(f"DEBUG erreur conversion geom {num_ilot} :", e)
+            geom_ee = None
 
-    # ✅ DEBUG : tester la présence de pixels Sentinel sous la parcelle
-    try:
-        pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
-    except Exception as e:
-        pixel_count = f"Erreur sample : {e}"
+        # ✅ DEBUG : test pixels Sentinel
+        try:
+            pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
+        except Exception as e:
+            pixel_count = f"Erreur sample : {e}"
 
-    st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+        st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
 
-        # ✅ Seulement après : calcul NDVI
+        # ✅ Calcul NDVI SI géométrie valide
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+
         classe_txt, col_cl = classify_ndvi(nd_mean)
 
         rows.append({
@@ -242,6 +247,7 @@ if img is not None and d is not None:
             "Date": str(d)
         })
 
+    # ✅ Conversion tableau final
     st.session_state.result_single = pd.DataFrame(rows)
 
 # ✅ AFFICHAGE RÉSULTATS
