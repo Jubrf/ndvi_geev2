@@ -1,6 +1,5 @@
 streamlit
 earthengine-api
-geemap
 shapely
 pandas
 geopandas
