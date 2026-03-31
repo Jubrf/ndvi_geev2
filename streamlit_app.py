@@ -40,38 +40,7 @@ init_gee(service_account, private_key)
 st.title("🌱 NDVI – Analyse simple (Kermap)")
 
 # ============================================================
-# ✅ SAUVEGARDE CSV
-# ============================================================
-def ensure_history_dir():
-    if not os.path.exists("history"):
-        os.makedirs("history")
-
-def sanitize_name(name):
-    name = name.strip().lower()
-    return re.sub(r"[^a-z0-9_-]+", "_", name)
-
-def save_dataframe(df, filename, save_name, meta=None):
-    ensure_history_dir()
-    path = os.path.join("history", filename)
-
-    if df is None or df.empty:
-        st.error("❌ Tableau vide")
-        return
-
-    df2 = df.copy()
-    df2["save_name"] = save_name
-    if meta:
-        for k,v in meta.items():
-            df2[k] = v
-
-    if not os.path.exists(path):
-        df2.to_csv(path, index=False)
-    else:
-        df2.to_csv(path, mode="a", header=False, index=False)
-
-
-# ============================================================
-# ✅ SESSION STATE (Épuré)
+# ✅ SESSION STATE SIMPLIFIÉ
 # ============================================================
 DEFAULTS = {
     "available_dates_single": None,
@@ -88,7 +57,7 @@ for k,v in DEFAULTS.items():
 # ============================================================
 # ✅ UPLOAD SIG
 # ============================================================
-uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON (WGS84 de préférence)", type=["zip","geojson"])
+uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON", type=["zip","geojson"])
 if not uploaded:
     st.stop()
 
@@ -105,7 +74,7 @@ aoi = ee.Geometry.Rectangle([minx,miny,maxx,maxy])
 
 
 # ============================================================
-# ✅ CLASSIFICATION & COULEURS
+# ✅ COULEURS & CLASSIFICATION NDVI
 # ============================================================
 def classify_ndvi(nd):
     if nd is None: return ("Indéterminé","#bdbdbd")
@@ -118,14 +87,17 @@ def covered(v):
     return "✅ Couvert" if v>=0.5 else "❌ Non couvert"
 
 def colorize(nd):
-    if nd is None: return "#bbbbbb"
-    if nd < 0.25: return "#d73027"
-    if nd < 0.50: return "#fee08b"
+    if nd is None:
+        return "#bbbbbb"
+    if nd < 0.25:
+        return "#d73027"
+    if nd < 0.50:
+        return "#fee08b"
     return "#1a9850"
 
 
 # ============================================================
-# ✅ SELECTEUR DE TUILE
+# ✅ SELECTEUR DE TUILES
 # ============================================================
 def tuile_selector(label, dates_key):
 
@@ -141,7 +113,6 @@ def tuile_selector(label, dates_key):
         return None,None
 
     if mode == "Tuiles disponibles":
-
         if st.button(f"📅 Lister ({label})"):
             st.session_state[dates_key] = get_available_s2_dates(aoi,120)
 
@@ -207,7 +178,7 @@ def tuile_selector(label, dates_key):
         if st.session_state.get(dates_key):
 
             chosen = st.selectbox(
-                f"Dates ({label})",
+                f"Dates du mois ({label})",
                 st.session_state[dates_key],
                 key=f"sel_month_{label}"
             )
@@ -219,7 +190,7 @@ def tuile_selector(label, dates_key):
 
 
 # =============================================================================
-# ✅ MODE — ANALYSE SIMPLE SEULEMENT
+# ✅ ANALYSE SIMPLE — VERSION ÉPURÉE
 # =============================================================================
 
 st.header("🟩 Analyse NDVI — 1 Date")
@@ -233,7 +204,7 @@ if img is not None:
     except:
         st.write("DEBUG Footprint : Erreur")
 
-# ✅ Analyse NDVI
+# ✅ Calcul NDVI
 if img is not None and d is not None:
 
     st.session_state.date_single = d
@@ -267,7 +238,7 @@ if st.session_state.result_single is not None:
     st.success(f"✅ Résultats NDVI — Tuile : {st.session_state.date_single}")
     st.dataframe(df)
 
-    # ✅ CARTE FOLIUM
+    # ✅ CARTE NDVI
     m = folium.Map(location=[(miny+maxy)/2,(minx+maxx)/2], zoom_start=14)
 
     for idx, feat in enumerate(features):
@@ -293,20 +264,3 @@ if st.session_state.result_single is not None:
         ).add_to(m)
 
     st_folium(m, height=600)
-
-    # ✅ SAUVEGARDE
-    st.subheader("💾 Sauvegarder")
-    raw_name = st.text_input("Nom de la sauvegarde :", key="save_simple")
-    save_name = sanitize_name(raw_name)
-
-    if st.button("✅ Sauvegarder"):
-        if not save_name:
-            st.error("❌ Nom invalide")
-        else:
-            save_dataframe(
-                df,
-                "analyses_simple.csv",
-                save_name,
-                meta={"analysis_type":"simple","date":st.session_state.date_single}
-            )
-            st.success(f"✅ Sauvegarde effectuée sous : {save_name}")
