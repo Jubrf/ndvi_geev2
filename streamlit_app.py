@@ -224,14 +224,14 @@ if img is not None and d is not None:
         geom = feat["geometry"]
         num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
 
-        # ✅ Convertir la géométrie Shapely → EE
+        # ✅ Conversion Shapely -> EE
         try:
             geom_ee = shapely_to_ee(geom)
         except Exception as e:
             st.write(f"DEBUG erreur conversion geom {num_ilot} :", e)
             geom_ee = None
 
-        # ✅ DEBUG : test pixels Sentinel
+        # ✅ DEBUG PIXELS (test couverture Sentinel)
         try:
             pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
         except Exception as e:
@@ -239,7 +239,7 @@ if img is not None and d is not None:
 
         st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
 
-        # ✅ Calcul NDVI SI géométrie valide
+        # ✅ Calcul NDVI
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
 
         classe_txt, col_cl = classify_ndvi(nd_mean)
@@ -253,7 +253,6 @@ if img is not None and d is not None:
             "Date": str(d)
         })
 
-    # ✅ Conversion tableau final
     st.session_state.result_single = pd.DataFrame(rows)
 
 # ✅ AFFICHAGE RÉSULTATS
