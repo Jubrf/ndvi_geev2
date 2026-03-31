@@ -29,6 +29,7 @@ def _search_valid_image(aoi, start_date=None, end_date=None, limit=40):
 
     collections = [
         ee.ImageCollection("COPERNICUS/S2_SR"),
+        ee.ImageCollection("COPERNICUS/S2"),
         ee.ImageCollection("COPERNICUS/S2_HARMONIZED"),
     ]
 
