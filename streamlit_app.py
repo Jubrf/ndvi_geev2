@@ -15,7 +15,8 @@ from utils.gee_ndvi import (
     compute_ndvi,
     compute_vegetation_mask,
     _build_geom_ee,
-    _COLLECTIONS
+    _COLLECTIONS,
+    compute_evi2     # ✅ AJOUT EVI2
 )
 from utils.ndvi_processing import zonal_stats_ndvi
 
@@ -44,12 +45,10 @@ uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON", type=["zip",
 
 # ============================================================
 # RESET SESSION STATE SI NOUVEAU FICHIER
-# Détecte le changement de fichier via son nom — reset complet si différent.
 # ============================================================
 if uploaded is not None:
     current_file = uploaded.name
     if st.session_state.get("loaded_file") != current_file:
-        # Nouveau fichier → reset total
         for key in ["loaded_file", "result_single", "date_single",
                     "available_dates_single", "features", "bounds"]:
             st.session_state.pop(key, None)
@@ -61,8 +60,8 @@ else:
 # ============================================================
 # SESSION STATE
 # ============================================================
-if "result_single"         not in st.session_state: st.session_state.result_single         = None
-if "date_single"           not in st.session_state: st.session_state.date_single           = None
+if "result_single"          not in st.session_state: st.session_state.result_single          = None
+if "date_single"            not in st.session_state: st.session_state.date_single            = None
 if "available_dates_single" not in st.session_state: st.session_state.available_dates_single = None
 
 # ============================================================
@@ -76,7 +75,7 @@ for f in features[:3]:
     st.write("DEBUG geom bounds :", f["geometry"].bounds)
 
 # ============================================================
-# AOI (rectangle englobant — conservé pour compatibilité signature)
+# AOI
 # ============================================================
 geoms = [f["geometry"] for f in features]
 minx  = min(g.bounds[0] for g in geoms)
@@ -88,7 +87,7 @@ aoi   = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
 st.write("DEBUG AOI (WGS84):", [minx, miny, maxx, maxy])
 
 # ============================================================
-# CLASSIFICATION
+# CLASSIFICATION NDVI
 # ============================================================
 def classify_ndvi(nd):
     if nd is None:      return ("Indéterminé",     "#bdbdbd")
@@ -105,6 +104,36 @@ def colorize(nd):
     if nd < 0.25:  return "#d73027"
     if nd < 0.50:  return "#fee08b"
     return                "#1a9850"
+
+# ============================================================
+# ✅ AJOUT : INTERPRÉTATION NDVI + EVI2
+# ============================================================
+def interpret_ndvi_evi(nd, evi):
+    if nd is None or evi is None:
+        return "Indéterminé"
+
+    # Sol nu ou résidus secs
+    if nd < 0.10 and evi < 0.07:
+        return "Sol nu / résidus"
+
+    # Levée de blé/orge : NDVI faible mais cohérent avec EVI2
+    if nd < 0.20 and abs(nd - evi) < 0.05:
+        return "Levée végétale (blé/orge)"
+
+    # Sol clair : NDVI artificiellement élevé
+    if nd < 0.20 and nd > evi * 1.8:
+        return "Sol clair / résidus"
+
+    # Saturation NDVI
+    if nd > 0.80:
+        return "Couvert très dense (saturation NDVI)"
+
+    # Végétation significative
+    if nd >= 0.25:
+        return "Couvert végétal présent"
+
+    return "Indéterminé"
+
 
 # ============================================================
 # SÉLECTEUR TUILE
@@ -160,8 +189,7 @@ def tuile_selector(label, dates_key):
         )
 
         start = f"{year}-{month_num}-01"
-        end   = f"{year+1}-01-01" if month_num == "12" \
-                else f"{year}-{int(month_num)+1:02d}-01"
+        end   = f"{year+1}-01-01" if month_num == "12" else f"{year}-{int(month_num)+1:02d}-01"
 
         if st.button(f"Rechercher ({label})"):
             geom_ee   = _build_geom_ee(features)
@@ -195,7 +223,7 @@ def tuile_selector(label, dates_key):
         return None, None
 
 # ============================================================
-# ANALYSE NDVI
+# ANALYSE NDVI + EVI2
 # ============================================================
 st.header("🟩 Analyse NDVI — 1 Date")
 
@@ -213,6 +241,7 @@ if img is not None and d is not None:
     st.session_state.date_single = d
 
     ndvi     = compute_ndvi(img)
+    evi2     = compute_evi2(img)       # ✅ AJOUT EVI2
     veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
     rows = []
@@ -229,8 +258,24 @@ if img is not None and d is not None:
             px = f"Erreur : {e}"
         st.write(f"DEBUG pixels pour {num_ilot} :", px)
 
+        # Moyennes NDVI
         nd_mean, veg_prop, quality_pct = zonal_stats_ndvi(ndvi, veg_mask, geom)
-        classe_txt, _                  = classify_ndvi(nd_mean)
+        classe_txt, _ = classify_ndvi(nd_mean)
+
+        # ✅ échantillon NDVI
+        try:
+            nd_sample = ndvi.sample(region=geom_ee, scale=10).first().get("NDVI").getInfo()
+        except:
+            nd_sample = None
+
+        # ✅ échantillon EVI2
+        try:
+            evi_sample = evi2.sample(region=geom_ee, scale=10).first().get("EVI2").getInfo()
+        except:
+            evi_sample = None
+
+        # ✅ Interprétation NDVI + EVI2
+        interpretation = interpret_ndvi_evi(nd_sample, evi_sample)
 
         if quality_pct is not None and quality_pct < 50:
             st.warning(f"⚠️ {num_ilot} : seulement {quality_pct}% de pixels valides (nuages/ombres détectés)")
@@ -238,6 +283,9 @@ if img is not None and d is not None:
         rows.append({
             "NUM_ILOT"       : num_ilot,
             "NDVI_moyen"     : nd_mean,
+            "NDVI_sample"    : nd_sample,
+            "EVI2_sample"    : evi_sample,
+            "Interprétation" : interpretation,
             "Classe"         : classe_txt,
             "Proportion_veg" : veg_prop,
             "Couvert"        : covered(veg_prop),
@@ -248,7 +296,7 @@ if img is not None and d is not None:
     st.session_state.result_single = pd.DataFrame(rows)
 
 # ============================================================
-# AFFICHAGE + CARTE + EXPORT CSV PROPRE
+# AFFICHAGE + CSV + CARTE
 # ============================================================
 if st.session_state.result_single is not None:
 
@@ -257,7 +305,7 @@ if st.session_state.result_single is not None:
     st.success(f"✅ Résultats NDVI — {st.session_state.date_single}")
     st.dataframe(df)
 
-    # ✅ EXPORT CSV propre (séparateur ; pour Excel FR)
+    # EXPORT CSV
     csv_bytes = df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
     st.download_button(
         label     = "⬇️ Exporter le tableau (CSV Excel)",
@@ -277,7 +325,8 @@ if st.session_state.result_single is not None:
         tooltip_html = (
             f"<b>Ilot :</b> {df.iloc[idx]['NUM_ILOT']}<br>"
             f"<b>NDVI :</b> {fmt(nd)}<br>"
-            f"<b>Classe :</b> {df.iloc[idx]['Classe']}"
+            f"<b>Classe :</b> {df.iloc[idx]['Classe']}<br>"
+            f"<b>Interprétation :</b> {df.iloc[idx]['Interprétation']}"
         )
 
         folium.GeoJson(
