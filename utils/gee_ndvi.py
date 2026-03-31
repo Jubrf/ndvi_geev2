@@ -2,7 +2,7 @@ import ee
 import datetime
 
 # ----------------------------------------------------------
-# ✅ INITIALISATION GEE
+# INITIALISATION GEE
 # ----------------------------------------------------------
 def init_gee(service_account, private_key):
     credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
@@ -10,13 +10,9 @@ def init_gee(service_account, private_key):
 
 
 # ----------------------------------------------------------
-# ✅ GÉOMÉTRIE EXACTE DES PARCELLES (utilisée partout)
+# GÉOMÉTRIE EXACTE DES PARCELLES
 # ----------------------------------------------------------
 def _build_geom_ee(features):
-    """
-    Construit la géométrie Earth Engine à partir des parcelles Shapely.
-    Utilisé systématiquement pour filtrer les collections.
-    """
     geoms = [f["geometry"] for f in features]
     total_geom = geoms[0]
     for g in geoms[1:]:
@@ -28,18 +24,39 @@ def _build_geom_ee(features):
 
 
 # ----------------------------------------------------------
-# ✅ LISTE DES COLLECTIONS
+# COLLECTIONS (ordre de priorité)
 # ----------------------------------------------------------
 _COLLECTIONS = [
-    "COPERNICUS/S2_SR_HARMONIZED",  # priorité : SR harmonisé (le plus complet)
-    "COPERNICUS/S2_SR",             # legacy SR (centre Alsace)
-    "COPERNICUS/S2_HARMONIZED",     # TOA harmonisé
+    "COPERNICUS/S2_SR_HARMONIZED",
+    "COPERNICUS/S2_SR",
+    "COPERNICUS/S2_HARMONIZED",
 ]
+
+# Valeurs SCL à masquer : ombres (3), nuages moy (8), nuages haute (9), cirrus (10)
+_SCL_CLOUD_VALUES = [3, 8, 9, 10]
 
 
 # ----------------------------------------------------------
-# ✅ MOSAÏQUE D'UNE DATE DONNÉE
-# Fusionne toutes les tuiles d'une même date qui couvrent les parcelles.
+# MASQUE NUAGE/OMBRE via SCL
+# S'applique uniquement aux collections SR (qui ont la bande SCL).
+# Les collections TOA (S2_HARMONIZED) n'ont pas SCL → pas de masque.
+# ----------------------------------------------------------
+def _apply_scl_mask(img, colname):
+    if "SR" not in colname:
+        return img  # TOA : pas de SCL disponible
+
+    scl = img.select("SCL")
+    cloud_mask = scl.eq(_SCL_CLOUD_VALUES[0])
+    for val in _SCL_CLOUD_VALUES[1:]:
+        cloud_mask = cloud_mask.Or(scl.eq(val))
+
+    # Masque inversé : 1 = pixel propre, 0 = nuage/ombre
+    clean_mask = cloud_mask.Not()
+    return img.updateMask(clean_mask)
+
+
+# ----------------------------------------------------------
+# MOSAÏQUE D'UNE DATE DONNÉE (avec masque SCL)
 # ----------------------------------------------------------
 def _build_mosaic_for_date(features, date_str, colname):
     geom_ee = _build_geom_ee(features)
@@ -51,6 +68,7 @@ def _build_mosaic_for_date(features, date_str, colname):
         ee.ImageCollection(colname)
         .filterBounds(geom_ee)
         .filterDate(start, end)
+        .map(lambda img: _apply_scl_mask(img, colname))  # ✅ masque SCL
     )
 
     count = col.size().getInfo()
@@ -59,7 +77,7 @@ def _build_mosaic_for_date(features, date_str, colname):
 
     mosaic = col.mosaic().clip(geom_ee)
 
-    # Vérifier que la mosaïque a bien des pixels sur les parcelles
+    # Vérifier qu'il reste des pixels propres sur les parcelles
     try:
         count_dict = mosaic.select("B4").reduceRegion(
             reducer=ee.Reducer.count(),
@@ -78,7 +96,7 @@ def _build_mosaic_for_date(features, date_str, colname):
 
 
 # ----------------------------------------------------------
-# ✅ CHERCHE LA MOSAÏQUE VALIDE POUR UNE DATE
+# CHERCHE LA MOSAÏQUE VALIDE POUR UNE DATE
 # ----------------------------------------------------------
 def _find_mosaic(features, date_str):
     for colname in _COLLECTIONS:
@@ -89,7 +107,7 @@ def _find_mosaic(features, date_str):
 
 
 # ----------------------------------------------------------
-# ✅ DERNIÈRE MOSAÏQUE DISPONIBLE
+# DERNIÈRE MOSAÏQUE DISPONIBLE
 # ----------------------------------------------------------
 def get_latest_s2_image(aoi, features, max_days=30):
     today = datetime.date.today()
@@ -102,17 +120,14 @@ def get_latest_s2_image(aoi, features, max_days=30):
 
 
 # ----------------------------------------------------------
-# ✅ LISTE DES DATES DISPONIBLES
-# Filtre sur la géométrie EXACTE des parcelles (pas l'AOI rectangle)
+# LISTE DES DATES DISPONIBLES
 # ----------------------------------------------------------
 def get_available_s2_dates(aoi, features, max_days=120):
-    today = datetime.date.today()
-    start = today - datetime.timedelta(days=max_days)
-
+    today   = datetime.date.today()
+    start   = today - datetime.timedelta(days=max_days)
     geom_ee = _build_geom_ee(features)
 
     all_dates = set()
-
     for colname in _COLLECTIONS:
         col = (
             ee.ImageCollection(colname)
@@ -121,14 +136,13 @@ def get_available_s2_dates(aoi, features, max_days=120):
         )
         timestamps = col.aggregate_array("system:time_start").getInfo()
         for t in timestamps:
-            d = datetime.datetime.fromtimestamp(t / 1000).date()
-            all_dates.add(d)
+            all_dates.add(datetime.datetime.fromtimestamp(t / 1000).date())
 
     return sorted(all_dates, reverse=True)
 
 
 # ----------------------------------------------------------
-# ✅ MOSAÏQUE POUR UNE DATE CIBLE (sélection manuelle)
+# MOSAÏQUE POUR UNE DATE CIBLE (sélection manuelle)
 # ----------------------------------------------------------
 def get_closest_s2_image(aoi, target_date, features, max_days=120):
     if isinstance(target_date, str):
@@ -144,14 +158,14 @@ def get_closest_s2_image(aoi, target_date, features, max_days=120):
 
 
 # ----------------------------------------------------------
-# ✅ NDVI
+# NDVI
 # ----------------------------------------------------------
 def compute_ndvi(img):
     return img.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
 
 # ----------------------------------------------------------
-# ✅ MASQUE NDVI > seuil
+# MASQUE VÉGÉTATION (NDVI > seuil)
 # ----------------------------------------------------------
 def compute_vegetation_mask(ndvi_img, threshold=0.25):
     return ndvi_img.gt(threshold).rename("VEG")
