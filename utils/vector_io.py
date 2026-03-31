@@ -44,7 +44,7 @@ def load_vector(uploaded):
             wkt = f.read()
         try:
             src = pyproj.CRS.from_wkt(wkt)
-            if src.to_epsg() != 4326:
+            if src.to_epsg() is None or src.to_epsg() != 4326:
                 dst = pyproj.CRS.from_epsg(4326)
                 transformer = pyproj.Transformer.from_crs(src, dst, always_xy=True).transform
         except:
