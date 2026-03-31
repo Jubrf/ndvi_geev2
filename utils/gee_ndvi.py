@@ -169,3 +169,18 @@ def compute_ndvi(img):
 # ----------------------------------------------------------
 def compute_vegetation_mask(ndvi_img, threshold=0.25):
     return ndvi_img.gt(threshold).rename("VEG")
+
+# ----------------------------------------------------------
+# EVI2 (Enhanced Vegetation Index 2)
+# ----------------------------------------------------------
+def compute_evi2(img):
+    """
+    EVI2 = 2.5 * (NIR - RED) / (NIR + 2.4*RED + 1)
+    Adapté Sentinel-2 (B8 = NIR, B4 = RED)
+    """
+    nir = img.select("B8")
+    red = img.select("B4")
+    evi2 = nir.subtract(red).divide(
+        nir.add(red.multiply(2.4)).add(1)
+    ).multiply(2.5)
+    return evi2.rename("EVI2")
