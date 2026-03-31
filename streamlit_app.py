@@ -62,6 +62,34 @@ if not uploaded:
     st.stop()
 
 features = load_vector(uploaded)
+# ✅ NORMALISATION ABSOLUE DES GEOMETRIES GEOJSON POUR EARTH ENGINE
+from shapely.geometry import shape, Polygon, MultiPolygon
+from shapely.ops import unary_union
+
+fixed_features = []
+for f in features:
+    g = f["geometry"]
+
+    # 1) Corrige topologie (self-intersections, bow-tie)
+    g = g.buffer(0)
+
+    # 2) Force MultiPolygon propre
+    if isinstance(g, Polygon):
+        g = MultiPolygon([g])
+
+    # 3) Aplatit structure (si MultiPolygon profondeur 3)
+    polys = []
+    for poly in g.geoms:
+        ext = list(poly.exterior.coords)
+        polys.append(Polygon(ext))
+
+    g_fixed = MultiPolygon(polys)
+
+    # 4) Remplace la géométrie réparée
+    f["geometry"] = g_fixed
+    fixed_features.append(f)
+
+features = fixed_features
 st.success(f"{len(features)} parcelles chargées ✅")
 
 geoms = [f["geometry"] for f in features]
