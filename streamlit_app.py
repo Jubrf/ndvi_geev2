@@ -161,24 +161,28 @@ def tuile_selector(label, dates_key):
             else f"{year}-{int(month_num)+1:02d}-01"
 
         if st.button(f"Rechercher ({label})"):
-            col = (
-                ee.ImageCollection("COPERNICUS/S2_SR")
-                .filterBounds(aoi)
-                .filterDate(start,end)
-                .sort("system:time_start", False)
-            )
-            timestamps = col.aggregate_array("system:time_start").getInfo()
+            # ✅ CORRECTION : utilise la géométrie exacte des parcelles (pas aoi)
+            from utils.gee_ndvi import _build_geom_ee, _COLLECTIONS
+            geom_ee = _build_geom_ee(features)
 
-            if not timestamps:
+            all_dates = set()
+            for colname in _COLLECTIONS:
+                col = (
+                    ee.ImageCollection(colname)
+                    .filterBounds(geom_ee)
+                    .filterDate(start, end)
+                    .sort("system:time_start", False)
+                )
+                timestamps = col.aggregate_array("system:time_start").getInfo()
+                for t in timestamps:
+                    d = datetime.datetime.fromtimestamp(t / 1000).date()
+                    all_dates.add(d)
+
+            if not all_dates:
                 st.error("❌ Aucune tuile ce mois.")
-                return None,None
+                return None, None
 
-            month_dates = sorted(
-                { datetime.datetime.fromtimestamp(t/1000, datetime.UTC).date()
-                  for t in timestamps },
-                reverse=True
-            )
-
+            month_dates = sorted(all_dates, reverse=True)
             st.session_state[dates_key] = month_dates
 
         if st.session_state.get(dates_key):
