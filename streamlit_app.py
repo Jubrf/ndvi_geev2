@@ -22,7 +22,7 @@ from utils.gee_ndvi import (
     compute_ndvi,
     compute_vegetation_mask
 )
-from utils.ndvi_processing import zonal_stats_ndvi
+from utils.ndvi_processing import zonal_stats_ndvi, shapely_to_ee
 
 # ============================================================
 # ✅ Format NDVI
