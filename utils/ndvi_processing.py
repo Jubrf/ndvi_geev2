@@ -4,31 +4,27 @@ from shapely.ops import transform
 
 def shapely_to_ee(geom):
     """
-    Convertit Polygon / MultiPolygon Shapely en ee.Geometry propre.
-    Version ÉPURÉE : SHP uniquement (pas GeoJSON compliqué).
+    Conversion robuste Shapely -> Earth Engine
+    Compatible Polygon et MultiPolygon
     """
+    from shapely.geometry import Polygon, MultiPolygon
 
-    # ✅ Supprimer la 3e dimension si présente
-    def strip_z(x, y, z=None):
-        return (x, y)
-
+    # assurer 2D
+    def strip_z(x, y, z=None): return (x, y)
     geom2d = transform(strip_z, geom)
 
-    # ✅ CAS 1 : POLYGON
     if isinstance(geom2d, Polygon):
         exterior = list(geom2d.exterior.coords)
         return ee.Geometry.Polygon([exterior])
 
-    # ✅ CAS 2 : MULTIPOLYGON
     if isinstance(geom2d, MultiPolygon):
         parts = []
         for poly in geom2d.geoms:
-            exterior = list(poly.exterior.coords)
-            parts.append([exterior])
+            ext = list(poly.exterior.coords)
+            parts.append([ext])
         return ee.Geometry.MultiPolygon(parts)
 
-    return None   # ✅ Autres cas non gérés car SHP uniquement
-
+    return None
 
 def zonal_stats_ndvi(ndvi_img, veg_mask, geom):
     """
