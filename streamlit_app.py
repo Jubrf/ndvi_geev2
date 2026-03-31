@@ -22,7 +22,7 @@ from utils.gee_ndvi import (
     compute_ndvi,
     compute_vegetation_mask
 )
-from utils.ndvi_processing import zonal_stats_ndvi, shapely_to_ee
+from utils.ndvi_processing import zonal_stats_ndvi
 
 # ============================================================
 # ✅ Format NDVI
@@ -40,7 +40,7 @@ service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
 private_key = st.secrets["GEE_PRIVATE_KEY"]
 init_gee(service_account, private_key)
 
-st.title("🌱 NDVI – Analyse simple (SHP uniquement, reprojection auto)")
+st.title("🌱 NDVI – Analyse simple (SHP avec détection automatique du CRS)")
 
 # ============================================================
 # ✅ SESSION STATE
@@ -58,43 +58,78 @@ for k,v in DEFAULTS.items():
 # ============================================================
 # ✅ UPLOAD SIG
 # ============================================================
-uploaded = st.file_uploader("📁 Charger un SHP (ZIP)", type=["zip"])
+uploaded = st.file_uploader("📁 Charger un SHP (ZIP uniquement)", type=["zip"])
 if not uploaded:
     st.stop()
 
+# ✅ Chargement brut
 features = load_vector(uploaded)
-
-st.success(f"{len(features)} parcelles SHP chargées ✅")
+st.success(f"{len(features)} parcelles chargées ✅")
 
 # ============================================================
-# ✅ DETECTION DU SRC D’ORIGINE (SHAPEFILE)
+# ✅ DETECTION AUTOMATIQUE DU CRS POUR SHP
 # ============================================================
+st.write("DEBUG : détection automatique du CRS...")
+
 try:
     import fiona
     uploaded.seek(0)
     with fiona.BytesCollection(uploaded.read()) as src:
-        crs_in = src.crs
+        crs_in = src.crs_wkt or src.crs
 except:
     crs_in = None
 
 st.write("DEBUG CRS détecté :", crs_in)
 
-# ✅ Fallback si CRS non détecté
+# ✅ Si QGIS/Fiona ne détecte pas le CRS → test intelligent
+possible_crs = [
+    "EPSG:3948",  # CC48
+    "EPSG:3949",  # CC49
+    "EPSG:3950",  # CC50
+    "EPSG:2154",  # Lambert 93
+    "EPSG:4326",  # WGS84
+    "EPSG:3857",  # Web Mercator
+]
+
 if not crs_in:
-    # Lorsque Fiona n’arrive pas lire -> on assume les projections FR courantes
-    st.warning("❗ CRS non détecté. Tentative automatique CC48 → WGS84.")
-    crs_in = "EPSG:3948"
+    st.warning("⚠ CRS non détecté. Tentative de détection automatique...")
 
-# ✅ Construction du transformeur
-try:
-    source_crs = pyproj.CRS.from_user_input(crs_in)
-except:
-    source_crs = pyproj.CRS.from_epsg(3948)   # fallback CC48
+    # On prend un point pour tester
+    g0 = features[0]["geometry"]
+    x0, y0 = list(g0.exterior.coords)[0] if isinstance(g0, Polygon) else list(list(g0.geoms)[0].exterior.coords)[0]
 
+    detected = None
+    for test in possible_crs:
+        try:
+            transf = pyproj.Transformer.from_crs(test, "EPSG:4326", always_xy=True)
+            tx, ty = transf.transform(x0, y0)
+
+            # ✅ Test si le point transformé tombe en France
+            if 4 <= tx <= 10 and 42 <= ty <= 52:
+                detected = test
+                break
+        except:
+            pass
+
+    if detected is None:
+        st.error("❌ Impossible de détecter le CRS. Lis le code EPSG dans QGIS.")
+        st.stop()
+
+    crs_in = detected
+    st.success(f"✅ CRS automatiquement détecté : {crs_in}")
+
+else:
+    crs_in = pyproj.CRS.from_user_input(crs_in).to_authority()[1]
+    crs_in = f"EPSG:{crs_in}"
+    st.success(f"✅ CRS détecté automatiquement : {crs_in}")
+
+# ============================================================
+# ✅ REPROJECTION SHP -> WGS84
+# ============================================================
+source_crs = pyproj.CRS.from_user_input(crs_in)
 target_crs = pyproj.CRS.from_epsg(4326)
 transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True).transform
 
-# ✅ Reprojection automatique SHP -> WGS84
 for f in features:
     geom = f["geometry"]
     if geom is not None:
@@ -104,22 +139,16 @@ for f in features:
 # ✅ CALCUL AOI (WGS84)
 # ============================================================
 geoms = [f["geometry"] for f in features]
-
 minx = min(g.bounds[0] for g in geoms)
 miny = min(g.bounds[1] for g in geoms)
 maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
-# ✅ Extension AOI pour garantir sélection de la bonne dalle
-expand = 0.1
-aoi = ee.Geometry.Rectangle([
-    minx - expand,
-    miny - expand,
-    maxx + expand,
-    maxy + expand
-])
+# ✅ Extension AOI pour garantir la bonne dalle Sentinel
+expand = 0.1   # ~10 km
+aoi = ee.Geometry.Rectangle([minx-expand, miny-expand, maxx+expand, maxy+expand])
 
-st.write("DEBUG AOI :", [minx,miny,maxx,maxy])
+st.write("DEBUG AOI (WGS84) :", [minx, miny, maxx, maxy])
 
 # ============================================================
 # ✅ CLASSIFICATION NDVI
@@ -144,7 +173,7 @@ def colorize(nd):
     return "#1a9850"
 
 # ============================================================
-# ✅ SELECTEUR DE TUILES
+# ✅ SELECTEUR TUILES
 # ============================================================
 def tuile_selector(label, dates_key):
 
@@ -176,6 +205,7 @@ def tuile_selector(label, dates_key):
         return None,None
 
     if mode == "Recherche par mois":
+
         year = st.selectbox(
             f"Année ({label})",
             list(range(2017, datetime.date.today().year+1))[::-1],
@@ -222,11 +252,10 @@ def tuile_selector(label, dates_key):
 
         if st.session_state.get(dates_key):
             chosen = st.selectbox(
-                f"Dates du mois ({label})",
+                f"Dates ({label})",
                 st.session_state[dates_key],
                 key=f"sel_month_{label}"
             )
-
             if st.button(f"✅ Charger ({label})"):
                 return get_closest_s2_image(aoi,chosen)
 
@@ -239,7 +268,6 @@ st.header("🟩 Analyse NDVI — 1 Date")
 
 img, d = tuile_selector("SIMPLE","available_dates_single")
 
-# ✅ DEBUG footprint
 if img is not None:
     try:
         st.write("DEBUG Footprint :", img.geometry().bounds().getInfo())
@@ -275,15 +303,15 @@ if img is not None and d is not None:
     st.session_state.result_single = pd.DataFrame(rows)
 
 # ============================================================
-# ✅ AFFICHAGE
+# ✅ AFFICHAGE RÉSULTATS + CARTE
 # ============================================================
 if st.session_state.result_single is not None:
 
     df = st.session_state.result_single
+
     st.success(f"✅ Résultats NDVI — Tuile : {st.session_state.date_single}")
     st.dataframe(df)
 
-    # ✅ CARTE NDVI
     m = folium.Map(location=[(miny+maxy)/2,(minx+maxx)/2], zoom_start=14)
 
     for idx, feat in enumerate(features):
