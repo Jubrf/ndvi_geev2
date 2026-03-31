@@ -111,8 +111,13 @@ maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
 # ✅ Extension AOI pour garantir sélection de la bonne dalle
-expand = 0.01
-aoi = ee.Geometry.Rectangle([minx-expand, miny-expand, maxx+expand, maxy+expand])
+expand = 0.1
+aoi = ee.Geometry.Rectangle([
+    minx - expand,
+    miny - expand,
+    maxx + expand,
+    maxy + expand
+])
 
 st.write("DEBUG AOI :", [minx,miny,maxx,maxy])
 
