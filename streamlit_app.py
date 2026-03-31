@@ -70,8 +70,14 @@ miny = min(g.bounds[1] for g in geoms)
 maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
-aoi = ee.Geometry.Rectangle([minx,miny,maxx,maxy])
-
+# ✅ Étend l’AOI pour forcer l'utilisation de la bonne dalle S2
+expand = 0.02   # ≈ 2 km d’extension
+aoi = ee.Geometry.Rectangle([
+    minx - expand,
+    miny - expand,
+    maxx + expand,
+    maxy + expand
+])
 
 # ============================================================
 # ✅ COULEURS & CLASSIFICATION NDVI
