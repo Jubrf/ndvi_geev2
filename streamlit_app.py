@@ -218,13 +218,19 @@ if img is not None and d is not None:
         geom = feat["geometry"]
         num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
 
-        # ✅ DEBUG : test si Earth Engine trouve des pixels Sentinel sous la parcelle
-        try:
-            pixel_count = ndvi.sample(region=geom, scale=10).size().getInfo()
-        except Exception as e:
-            pixel_count = f"Erreur sample : {e}"
+    # ✅ Convertir la géométrie Shapely → EE (obligatoire)
+        geom_ee = shapely_to_ee(geom)
 
-        st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+    # ✅ DEBUG : tester la présence de pixels Sentinel sous la parcelle
+    try:
+        pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
+    except Exception as e:
+        pixel_count = f"Erreur sample : {e}"
+
+    st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+
+    # ✅ Calcul NDVI (maintenant CA MARCHE)
+    nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
 
         # ✅ Seulement après : calcul NDVI
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
