@@ -2,27 +2,20 @@ import ee
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import transform
 
+
 # ============================================================
-# ✅ Conversion Shapely → Earth Engine (SHP uniquement)
+# Conversion Shapely → Earth Engine
 # ============================================================
 def shapely_to_ee(geom):
-    """
-    Conversion robuste Shapely -> Earth Engine
-    Compatible Polygon et MultiPolygon
-    """
-
-    # Supprimer le Z éventuel
     def strip_z(x, y, z=None):
         return (x, y)
 
     geom2d = transform(strip_z, geom)
 
-    # Polygon simple
     if isinstance(geom2d, Polygon):
         coords = list(geom2d.exterior.coords)
         return ee.Geometry.Polygon([coords])
 
-    # MultiPolygon
     if isinstance(geom2d, MultiPolygon):
         parts = []
         for poly in geom2d.geoms:
@@ -34,27 +27,26 @@ def shapely_to_ee(geom):
 
 
 # ============================================================
-# ✅ Zonal stats NDVI
+# Zonal stats NDVI + qualité pixels
 # ============================================================
 def zonal_stats_ndvi(ndvi_img, veg_mask, geom):
     """
-    Calcule NDVI moyen + proportion NDVI > 0.25
-    Version stable pour SHP uniquement
+    Calcule :
+    - NDVI moyen sur les pixels valides (non masqués nuage/ombre)
+    - Proportion de végétation (NDVI > 0.25)
+    - % de pixels valides sur la parcelle (indicateur qualité SCL)
+
+    Retourne (nd_mean, veg_prop, pixel_quality_pct)
     """
 
-    # Corriger les géométries invalides
     geom = geom.buffer(0)
-
-    # Convertir en Earth Engine
     geom_ee = shapely_to_ee(geom)
     if geom_ee is None:
-        return None, None
+        return None, None, None
 
-    # Clip NDVI à la géométrie
+    # --- NDVI moyen (pixels valides seulement, masque déjà appliqué) ---
     nd_local = ndvi_img.clip(geom_ee)
-    veg_local = veg_mask.clip(geom_ee) if veg_mask is not None else None
 
-    # NDVI moyen
     mean_dict = nd_local.reduceRegion(
         reducer=ee.Reducer.mean(),
         geometry=geom_ee,
@@ -66,19 +58,42 @@ def zonal_stats_ndvi(ndvi_img, veg_mask, geom):
     if nd_mean is not None:
         nd_mean = float(nd_mean)
 
-    # Proportion NDVI > 0.25
-    if veg_local is None:
-        return nd_mean, None
+    # --- Proportion végétation ---
+    veg_prop = None
+    if veg_mask is not None:
+        veg_local = veg_mask.clip(geom_ee)
+        veg_dict  = veg_local.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=geom_ee,
+            scale=10,
+            maxPixels=1e10
+        ).getInfo()
+        veg_prop = veg_dict.get("VEG", None)
+        if veg_prop is not None:
+            veg_prop = float(veg_prop)
 
-    veg_dict = veg_local.reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=geom_ee,
-        scale=10,
-        maxPixels=1e10
-    ).getInfo()
+    # --- Qualité pixels : % de pixels valides vs total théorique ---
+    # On compare le count des pixels NDVI valides (non masqués)
+    # au count total en désactivant le masque sur la même zone.
+    pixel_quality_pct = None
+    try:
+        count_valid = nd_local.reduceRegion(
+            reducer=ee.Reducer.count(),
+            geometry=geom_ee,
+            scale=10,
+            maxPixels=1e10
+        ).getInfo().get("NDVI", 0) or 0
 
-    veg_prop = veg_dict.get("VEG", None)
-    if veg_prop is not None:
-        veg_prop = float(veg_prop)
+        count_total = ndvi_img.unmask().clip(geom_ee).reduceRegion(
+            reducer=ee.Reducer.count(),
+            geometry=geom_ee,
+            scale=10,
+            maxPixels=1e10
+        ).getInfo().get("NDVI", 0) or 0
 
-    return nd_mean, veg_prop
+        if count_total > 0:
+            pixel_quality_pct = round((count_valid / count_total) * 100, 1)
+    except:
+        pixel_quality_pct = None
+
+    return nd_mean, veg_prop, pixel_quality_pct
