@@ -214,10 +214,20 @@ if img is not None and d is not None:
 
     rows=[]
     for feat in features:
-        geom = feat["geometry"]
-        num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
+    geom = feat["geometry"]
+    num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
 
-        nd_mean, veg_prop = zonal_stats_ndvi(ndvi,veg_mask,geom)
+    # ✅ DEBUG : test si Earth Engine trouve des pixels Sentinel sous la parcelle
+    try:
+        pixel_count = ndvi.sample(region=geom, scale=10).size().getInfo()
+    except Exception as e:
+        pixel_count = f"Erreur sample : {e}"
+
+    st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+
+    # ✅ Seulement après : calcul NDVI
+    nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+
         classe_txt,col_cl = classify_ndvi(nd_mean)
 
         rows.append({
