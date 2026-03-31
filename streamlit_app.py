@@ -229,9 +229,6 @@ if img is not None and d is not None:
 
     st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
 
-    # ✅ Calcul NDVI (maintenant CA MARCHE)
-    nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
-
         # ✅ Seulement après : calcul NDVI
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
         classe_txt, col_cl = classify_ndvi(nd_mean)
