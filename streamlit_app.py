@@ -171,24 +171,27 @@ if img and date_sel:
 
     rows = []
 
-    for f in features:
-        num = f["properties"].get("NUM_ILOT", "")
-        geom = f["geometry"]
+    for feat in features:
+        num = feat["properties"].get("NUM_ILOT", "")
+        geom = feat["geometry"]
+
         geom_ee = shapely_to_ee(geom)
 
-        # DEBUG PIXELS
+        # DEBUG pixels
         try:
             px = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
         except Exception as e:
             px = f"Erreur : {e}"
+
         st.write(f"DEBUG pixels {num} :", px)
 
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+        classe, couleur = classify_ndvi(nd_mean)
 
         rows.append({
             "NUM_ILOT": num,
             "NDVI_moyen": nd_mean,
-            "Classe": classify_ndvi(nd_mean)[0],
+            "Classe": classe,
             "Couvert": covered(veg_prop),
         })
 
