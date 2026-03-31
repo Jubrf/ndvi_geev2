@@ -6,6 +6,9 @@ import datetime
 import ee
 import os
 import re
+import pyproj
+from shapely.ops import transform
+from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
 
 # ============================================================
 # ✅ IMPORT UTILS
@@ -37,10 +40,10 @@ service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
 private_key = st.secrets["GEE_PRIVATE_KEY"]
 init_gee(service_account, private_key)
 
-st.title("🌱 NDVI – Analyse simple (Kermap)")
+st.title("🌱 NDVI – Analyse simple (SHP uniquement, reprojection auto)")
 
 # ============================================================
-# ✅ SESSION STATE SIMPLIFIÉ
+# ✅ SESSION STATE
 # ============================================================
 DEFAULTS = {
     "available_dates_single": None,
@@ -48,100 +51,73 @@ DEFAULTS = {
     "date_single": None,
     "result_single": None,
 }
-
 for k,v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-
 # ============================================================
 # ✅ UPLOAD SIG
 # ============================================================
-uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON", type=["zip","geojson"])
+uploaded = st.file_uploader("📁 Charger un SHP (ZIP)", type=["zip"])
 if not uploaded:
     st.stop()
 
 features = load_vector(uploaded)
-# ✅ Normalisation complète des géométries pour Earth Engine
-from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
-from shapely.ops import transform
 
-fixed_features = []
+st.success(f"{len(features)} parcelles SHP chargées ✅")
 
+# ============================================================
+# ✅ DETECTION DU SRC D’ORIGINE (SHAPEFILE)
+# ============================================================
+try:
+    import fiona
+    uploaded.seek(0)
+    with fiona.BytesCollection(uploaded.read()) as src:
+        crs_in = src.crs
+except:
+    crs_in = None
+
+st.write("DEBUG CRS détecté :", crs_in)
+
+# ✅ Fallback si CRS non détecté
+if not crs_in:
+    # Lorsque Fiona n’arrive pas lire -> on assume les projections FR courantes
+    st.warning("❗ CRS non détecté. Tentative automatique CC48 → WGS84.")
+    crs_in = "EPSG:3948"
+
+# ✅ Construction du transformeur
+try:
+    source_crs = pyproj.CRS.from_user_input(crs_in)
+except:
+    source_crs = pyproj.CRS.from_epsg(3948)   # fallback CC48
+
+target_crs = pyproj.CRS.from_epsg(4326)
+transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True).transform
+
+# ✅ Reprojection automatique SHP -> WGS84
 for f in features:
-    g = f["geometry"]
+    geom = f["geometry"]
+    if geom is not None:
+        f["geometry"] = transform(transformer, geom)
 
-    # ✅ 1) Nettoyage de base (corrige self-intersections)
-    try:
-        g = g.buffer(0)
-    except:
-        continue  # géométrie irrécupérable
-
-    # ✅ 2) Expand GeometryCollection -> MultiPolygon
-    if isinstance(g, GeometryCollection):
-        polys = []
-        for sub in g.geoms:
-            if isinstance(sub, Polygon):
-                polys.append(sub.buffer(0))
-            elif isinstance(sub, MultiPolygon):
-                polys.extend([p.buffer(0) for p in sub.geoms])
-        if polys:
-            g = MultiPolygon(polys)
-        else:
-            continue
-
-    # ✅ 3) Force MultiPolygon systématiquement
-    if isinstance(g, Polygon):
-        g = MultiPolygon([g])
-
-    # ✅ 4) On aplatit tout : MultiPolygon profondeur variable -> profondeur 2
-    cleaned_polys = []
-    for poly in g.geoms:
-        if poly.is_empty:
-            continue
-
-        # ✅ Refix polygon
-        poly = poly.buffer(0)
-
-        # ✅ Ignorer trous -> Earth Engine les refuse
-        ext = list(poly.exterior.coords)
-
-        # ✅ Ignorer géométries trop petites (bug fréquent)
-        if len(ext) < 4:
-            continue
-
-        cleaned_polys.append(Polygon(ext))
-
-    # ✅ 5) Vérification finale
-    if not cleaned_polys:
-        continue
-
-    g_fixed = MultiPolygon(cleaned_polys)
-
-    # ✅ 6) Remplacement
-    f["geometry"] = g_fixed
-    fixed_features.append(f)
-
-features = fixed_features
-st.success(f"{len(features)} parcelles chargées ✅")
-
+# ============================================================
+# ✅ CALCUL AOI (WGS84)
+# ============================================================
 geoms = [f["geometry"] for f in features]
+
 minx = min(g.bounds[0] for g in geoms)
 miny = min(g.bounds[1] for g in geoms)
 maxx = max(g.bounds[2] for g in geoms)
 maxy = max(g.bounds[3] for g in geoms)
 
-# ✅ Étend l’AOI pour forcer l'utilisation de la bonne dalle S2
-expand = 0.02   # ≈ 2 km d’extension
-aoi = ee.Geometry.Rectangle([
-    minx - expand,
-    miny - expand,
-    maxx + expand,
-    maxy + expand
-])
+# ✅ Extension AOI pour garantir sélection de la bonne dalle
+expand = 0.01
+aoi = ee.Geometry.Rectangle([minx-expand, miny-expand, maxx+expand, maxy+expand])
+
+st.write("DEBUG AOI :", [minx,miny,maxx,maxy])
 
 # ============================================================
-# ✅ COULEURS & CLASSIFICATION NDVI
+# ✅ CLASSIFICATION NDVI
 # ============================================================
 def classify_ndvi(nd):
     if nd is None: return ("Indéterminé","#bdbdbd")
@@ -161,7 +137,6 @@ def colorize(nd):
     if nd < 0.50:
         return "#fee08b"
     return "#1a9850"
-
 
 # ============================================================
 # ✅ SELECTEUR DE TUILES
@@ -196,22 +171,20 @@ def tuile_selector(label, dates_key):
         return None,None
 
     if mode == "Recherche par mois":
-
         year = st.selectbox(
             f"Année ({label})",
             list(range(2017, datetime.date.today().year+1))[::-1],
             key=f"year_{label}"
         )
 
-        month_list=[
+        months = [
             ("01","Janvier"),("02","Février"),("03","Mars"),("04","Avril"),
             ("05","Mai"),("06","Juin"),("07","Juillet"),("08","Août"),
             ("09","Septembre"),("10","Octobre"),("11","Novembre"),("12","Décembre")
         ]
-
         month_num,_ = st.selectbox(
             f"Mois ({label})",
-            month_list,
+            months,
             key=f"month_{label}",
             format_func=lambda x: x[1]
         )
@@ -243,7 +216,6 @@ def tuile_selector(label, dates_key):
             st.session_state[dates_key] = month_dates
 
         if st.session_state.get(dates_key):
-
             chosen = st.selectbox(
                 f"Dates du mois ({label})",
                 st.session_state[dates_key],
@@ -255,16 +227,14 @@ def tuile_selector(label, dates_key):
 
         return None,None
 
-
-# =============================================================================
-# ✅ ANALYSE SIMPLE — VERSION ÉPURÉE
-# =============================================================================
-
+# ============================================================
+# ✅ ANALYSE SIMPLE
+# ============================================================
 st.header("🟩 Analyse NDVI — 1 Date")
 
 img, d = tuile_selector("SIMPLE","available_dates_single")
 
-# ✅ DEBUG FOOTPRINT
+# ✅ DEBUG footprint
 if img is not None:
     try:
         st.write("DEBUG Footprint :", img.geometry().bounds().getInfo())
@@ -277,32 +247,15 @@ if img is not None and d is not None:
     st.session_state.date_single = d
 
     ndvi = compute_ndvi(img)
-    veg_mask = compute_vegetation_mask(ndvi, 0.25)
+    veg_mask = compute_vegetation_mask(ndvi,0.25)
 
     rows = []
 
     for feat in features:
         geom = feat["geometry"]
-        num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
+        num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
 
-        # ✅ Conversion Shapely -> EE
-        try:
-            geom_ee = shapely_to_ee(geom)
-        except Exception as e:
-            st.write(f"DEBUG erreur conversion geom {num_ilot} :", e)
-            geom_ee = None
-
-        # ✅ DEBUG PIXELS (test couverture Sentinel)
-        try:
-            pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
-        except Exception as e:
-            pixel_count = f"Erreur sample : {e}"
-
-        st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
-
-        # ✅ Calcul NDVI
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
-
         classe_txt, col_cl = classify_ndvi(nd_mean)
 
         rows.append({
@@ -316,7 +269,9 @@ if img is not None and d is not None:
 
     st.session_state.result_single = pd.DataFrame(rows)
 
-# ✅ AFFICHAGE RÉSULTATS
+# ============================================================
+# ✅ AFFICHAGE
+# ============================================================
 if st.session_state.result_single is not None:
 
     df = st.session_state.result_single
