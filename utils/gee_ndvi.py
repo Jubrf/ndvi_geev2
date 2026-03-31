@@ -10,37 +10,33 @@ def init_gee(service_account, private_key):
 
 
 # ============================================================
-# ✅ Détection automatique de la dalle Sentinel-2 couvrant les parcelles
+# ✅ Détecter automatiquement la dalle Sentinel-2 couvrant l'AOI
 # ============================================================
 def detect_mgrs_tile(aoi):
     """
-    Retourne automatiquement la dalle Sentinel-2 (MGRS_TILE)
-    correspondant au centroïde de l'AOI.
-
-    Dataset utilisé : grille officielle Sentinel-2 MGRS
-    fournie par Google et accessible à tous :
-    "projects/sat-io/open-datasets/MGRS"
+    Détecte automatiquement la dalle Sentinel-2 grâce à une
+    requête directe sur COPERNICUS/S2_SR, sans aucun dataset externe.
     """
-
+    # Centroïde de l'AOI
     centroid = aoi.centroid()
 
-    # ✅ Grille Sentinel-2 officielle, publique, fiable
-    mgrs = ee.FeatureCollection("projects/sat-io/open-datasets/MGRS")
+    # On prend n'importe quelle image Sentinel-2 qui couvre ce point
+    any_img = (
+        ee.ImageCollection("COPERNICUS/S2_SR")
+        .filterBounds(centroid)
+        .first()
+    )
 
-    # Trouver la dalle contenant le centroïde
-    feature = mgrs.filterBounds(centroid).first()
-
-    # Aucun résultat : retourner None
-    if feature is None:
+    # Si aucune image ne couvre — très rare
+    if any_img is None:
         return None
 
-    # ✅ Champ correct = "name"
-    tile = feature.get("name")
+    tile = any_img.get("MGRS_TILE")
     return tile
 
 
 # ============================================================
-# ✅ Dernière image Sentinel-2 de la dalle correspondant aux parcelles
+# ✅ Dernière image Sentinel-2 pour la tuile détectée
 # ============================================================
 def get_latest_s2_image(aoi):
     tile = detect_mgrs_tile(aoi)
@@ -64,7 +60,7 @@ def get_latest_s2_image(aoi):
 
 
 # ============================================================
-# ✅ Liste des dates disponibles pour la dalle Sentinel détectée
+# ✅ Liste des dates disponibles
 # ============================================================
 def get_available_s2_dates(aoi, limit=200):
     tile = detect_mgrs_tile(aoi)
@@ -82,23 +78,20 @@ def get_available_s2_dates(aoi, limit=200):
     if not timestamps:
         return []
 
-    dates = sorted(
-        [datetime.datetime.fromtimestamp(t / 1000).date() for t in timestamps],
+    return sorted(
+        [datetime.datetime.fromtimestamp(t/1000).date() for t in timestamps],
         reverse=True
     )
 
-    return dates
-
 
 # ============================================================
-# ✅ Image Sentinel la plus proche d’une date donnée
+# ✅ Récupérer l'image la plus proche
 # ============================================================
 def get_closest_s2_image(aoi, date):
     tile = detect_mgrs_tile(aoi)
     if tile is None:
         return None, None
 
-    # Fenêtre de 30 jours
     start = date - datetime.timedelta(days=15)
     end   = date + datetime.timedelta(days=15)
 
@@ -114,13 +107,13 @@ def get_closest_s2_image(aoi, date):
         return None, None
 
     ts = img.get("system:time_start").getInfo()
-    d = datetime.datetime.fromtimestamp(ts / 1000).date()
+    d = datetime.datetime.fromtimestamp(ts/1000).date()
 
     return img, d
 
 
 # ============================================================
-# ✅ NDVI & masque NDVI > 0.25 (inchangé)
+# ✅ NDVI & masque vegetation
 # ============================================================
 def compute_ndvi(img):
     return img.normalizedDifference(["B8", "B4"]).rename("NDVI")
