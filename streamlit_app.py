@@ -274,21 +274,45 @@ if img is not None:
     except:
         st.write("DEBUG Footprint : Erreur")
 
-# ✅ Calcul NDVI
+# ✅ ANALYSE NDVI
 if img is not None and d is not None:
 
     st.session_state.date_single = d
 
     ndvi = compute_ndvi(img)
-    veg_mask = compute_vegetation_mask(ndvi,0.25)
+    veg_mask = compute_vegetation_mask(ndvi, 0.25)
+
+    # ✅ DEBUG FOOTPRINT SENTINEL
+    try:
+        footprint = img.geometry().bounds().getInfo()
+        st.write("DEBUG FOOTPRINT Sentinel :", footprint)
+    except Exception as e:
+        st.write("DEBUG FOOTPRINT : erreur :", e)
 
     rows = []
 
     for feat in features:
         geom = feat["geometry"]
-        num_ilot = feat["properties"].get("NUM_ILOT","ILOT")
+        num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
 
+        # ✅ Convertir la géométrie en EarthEngine
+        try:
+            geom_ee = shapely_to_ee(geom)
+        except Exception as e:
+            st.write(f"DEBUG conversion geom {num_ilot} :", e)
+            geom_ee = None
+
+        # ✅ DEBUG PIXELS (voir si Sentinel couvre l’îlot)
+        try:
+            pixel_count = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
+        except Exception as e:
+            pixel_count = f"Erreur sample : {e}"
+
+        st.write(f"DEBUG pixels pour {num_ilot} :", pixel_count)
+
+        # ✅ Calcul NDVI pour l’îlot
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
+
         classe_txt, col_cl = classify_ndvi(nd_mean)
 
         rows.append({
