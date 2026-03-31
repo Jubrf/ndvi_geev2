@@ -62,49 +62,63 @@ if not uploaded:
     st.stop()
 
 features = load_vector(uploaded)
-# ✅ NORMALISATION ABSOLUE DES GEOMETRIES GEOJSON POUR EARTH ENGINE
-from shapely.geometry import Polygon, MultiPolygon
-from shapely.ops import unary_union
+# ✅ Normalisation complète des géométries pour Earth Engine
+from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
+from shapely.ops import transform
 
 fixed_features = []
 
 for f in features:
     g = f["geometry"]
 
-    # ✅ 1) Répare les géométries (self-intersections, bow-tie…)
+    # ✅ 1) Nettoyage de base (corrige self-intersections)
     try:
         g = g.buffer(0)
     except:
         continue  # géométrie irrécupérable
 
-    # ✅ 2) Force un MultiPolygon
+    # ✅ 2) Expand GeometryCollection -> MultiPolygon
+    if isinstance(g, GeometryCollection):
+        polys = []
+        for sub in g.geoms:
+            if isinstance(sub, Polygon):
+                polys.append(sub.buffer(0))
+            elif isinstance(sub, MultiPolygon):
+                polys.extend([p.buffer(0) for p in sub.geoms])
+        if polys:
+            g = MultiPolygon(polys)
+        else:
+            continue
+
+    # ✅ 3) Force MultiPolygon systématiquement
     if isinstance(g, Polygon):
         g = MultiPolygon([g])
 
-    # ✅ 3) Aplatit la structure ET supprime les trous
-    polys = []
+    # ✅ 4) On aplatit tout : MultiPolygon profondeur variable -> profondeur 2
+    cleaned_polys = []
     for poly in g.geoms:
-
-        # Polygon vide → on ignore
         if poly.is_empty:
             continue
 
-        # Extérieur uniquement (EE n'accepte pas les trous)
+        # ✅ Refix polygon
+        poly = poly.buffer(0)
+
+        # ✅ Ignorer trous -> Earth Engine les refuse
         ext = list(poly.exterior.coords)
 
-        # Annuler les polygones trop petits / pathologiques
+        # ✅ Ignorer géométries trop petites (bug fréquent)
         if len(ext) < 4:
             continue
 
-        polys.append(Polygon(ext))
+        cleaned_polys.append(Polygon(ext))
 
-    # ✅ Aucun polygon valide → ignorer l'îlot
-    if not polys:
+    # ✅ 5) Vérification finale
+    if not cleaned_polys:
         continue
 
-    g_fixed = MultiPolygon(polys)
+    g_fixed = MultiPolygon(cleaned_polys)
 
-    # ✅ 4) Remplace la géométrie réparée dans la feature
+    # ✅ 6) Remplacement
     f["geometry"] = g_fixed
     fixed_features.append(f)
 
