@@ -4,13 +4,11 @@ import pandas as pd
 from streamlit_folium import st_folium
 import datetime
 import ee
-import pyproj
-import geopandas as gpd
-from shapely.ops import transform
 
 # ============================================================
-# ✅ IMPORT UTILS
+# ✅ IMPORT UTILS (load_vector = ANCIEN, QUI MARCHE)
 # ============================================================
+from utils.vector_io import load_vector
 from utils.gee_ndvi import (
     init_gee,
     get_latest_s2_image,
@@ -19,77 +17,10 @@ from utils.gee_ndvi import (
     compute_ndvi,
     compute_vegetation_mask
 )
-from utils.ndvi_processing import zonal_stats_ndvi, shapely_to_ee
+from utils.ndvi_processing import zonal_stats_ndvi
 
 # ============================================================
-# ✅ INIT GEE
-# ============================================================
-service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
-private_key = st.secrets["GEE_PRIVATE_KEY"]
-init_gee(service_account, private_key)
-
-st.title("🌱 NDVI – Analyse simple (SHP uniquement, CRS via .prj)")
-
-# ============================================================
-# ✅ UPLOAD SHP
-# ============================================================
-uploaded = st.file_uploader("📁 Charger un SHP (ZIP)", type=["zip"])
-if not uploaded:
-    st.stop()
-
-# ============================================================
-# ✅ LECTURE SHP VIA GEOPANDAS (COMPATIBLE STREAMLIT CLOUD)
-# ============================================================
-try:
-    gdf = gpd.read_file(uploaded)
-except Exception as e:
-    st.error(f"❌ Impossible de lire le SHP : {e}")
-    st.stop()
-
-if gdf.crs is None:
-    st.error("❌ Le SHP n'a pas de CRS (.prj manquant). Impossible de continuer.")
-    st.stop()
-
-st.success(f"✅ {len(gdf)} parcelles chargées")
-st.write("📌 CRS détecté (via .prj) :", gdf.crs)
-
-source_crs = pyproj.CRS.from_user_input(gdf.crs)
-
-# ============================================================
-# ✅ Conversion en structures Python (features = list)
-# ============================================================
-features = []
-for _, row in gdf.iterrows():
-    features.append({
-        "properties": {k: v for k, v in row.items() if k != "geometry"},
-        "geometry": row.geometry
-    })
-
-# ============================================================
-# ✅ REPROJECTION → WGS84
-# ============================================================
-target_crs = pyproj.CRS.from_epsg(4326)
-transformer = pyproj.Transformer.from_crs(source_crs, target_crs, always_xy=True).transform
-
-for f in features:
-    f["geometry"] = transform(transformer, f["geometry"])
-
-# ============================================================
-# ✅ AOI
-# ============================================================
-geoms = [f["geometry"] for f in features]
-minx = min(g.bounds[0] for g in geoms)
-miny = min(g.bounds[1] for g in geoms)
-maxx = max(g.bounds[2] for g in geoms)
-maxy = max(g.bounds[3] for g in geoms)
-
-expand = 0.05
-aoi = ee.Geometry.Rectangle([minx-expand, miny-expand, maxx+expand, maxy+expand])
-
-st.write("DEBUG AOI (WGS84):", [minx, miny, maxx, maxy])
-
-# ============================================================
-# ✅ CLASSIFICATION NDVI (corrigée)
+# ✅ Formatage NDVI
 # ============================================================
 def fmt(v):
     try:
@@ -97,144 +28,215 @@ def fmt(v):
     except:
         return "NA"
 
+# ============================================================
+# ✅ INIT EARTH ENGINE
+# ============================================================
+service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
+private_key = st.secrets["GEE_PRIVATE_KEY"]
+init_gee(service_account, private_key)
+
+st.title("🌱 NDVI – Analyse simple (Version stable)")
+
+# ============================================================
+# ✅ UPLOAD SIG (SHP ZIP ou GeoJSON)
+# ============================================================
+uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON", type=["zip","geojson"])
+if not uploaded:
+    st.stop()
+
+# ✅ UTILISE TON ANCIEN load_vector() QUI MARCHE
+features = load_vector(uploaded)
+st.success(f"{len(features)} parcelles chargées ✅")
+
+# ============================================================
+# ✅ CALCUL AOI SANS REPROJECTION (load_vector s’en occupe déjà)
+# ============================================================
+geoms = [f["geometry"] for f in features]
+minx = min(g.bounds[0] for g in geoms)
+miny = min(g.bounds[1] for g in geoms)
+maxx = max(g.bounds[2] for g in geoms)
+maxy = max(g.bounds[3] for g in geoms)
+
+aoi = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
+
+# ============================================================
+# ✅ CLASSIFICATION & COULEURS (VERSION ORIGINALE)
+# ============================================================
 def classify_ndvi(nd):
-    """Retourne (classe_texte, couleur_hex)"""
-    if nd is None:
-        return "Indéterminé", "#bdbdbd"
-    if nd < 0.25:
-        return "Sol nu", "#d73027"
-    if nd < 0.50:
-        return "Végétation faible", "#fee08b"
-    return "Végétation dense", "#1a9850"
+    if nd is None: return ("Indéterminé", "#bdbdbd")
+    if nd < 0.25: return ("Sol nu", "#d73027")
+    if nd < 0.50: return ("Végétation faible", "#fee08b")
+    return ("Végétation dense", "#1a9850")
 
 def covered(v):
-    if v is None:
-        return "Indéterminé"
+    if v is None: return "Indéterminé"
     return "✅ Couvert" if v >= 0.5 else "❌ Non couvert"
 
 def colorize(nd):
-    if nd is None:
-        return "#bbbbbb"
-    if nd < 0.25:
-        return "#d73027"
-    if nd < 0.50:
-        return "#fee08b"
+    if nd is None: return "#bbbbbb"
+    if nd < 0.25: return "#d73027"
+    if nd < 0.50: return "#fee08b"
     return "#1a9850"
 
 # ============================================================
-# ✅ SELECTEUR TUILES
+# ✅ SELECTEUR TUILE (VERSION ORIGINALE)
 # ============================================================
-def tuile_selector(key):
+def tuile_selector(label, dates_key):
 
-    mode = st.radio("Choisir la tuile", ["Dernière tuile","Tuiles disponibles","Recherche par mois"])
+    mode = st.radio(
+        f"Choisir la tuile ({label})",
+        ["Dernière tuile", "Tuiles disponibles", "Recherche par mois"],
+        key=f"mode_{label}"
+    )
 
     if mode == "Dernière tuile":
-        if st.button("Charger dernière tuile"):
+        if st.button(f"Charger dernière tuile ({label})"):
             return get_latest_s2_image(aoi)
         return None, None
 
     if mode == "Tuiles disponibles":
-        if st.button("Lister dates"):
-            st.session_state[key] = get_available_s2_dates(aoi)
+        if st.button(f"Voir tuiles ({label})"):
+            st.session_state[dates_key] = get_available_s2_dates(aoi, 120)
 
-        if st.session_state.get(key):
-            date = st.selectbox("Dates :", st.session_state[key])
-            if st.button("Charger cette date"):
-                return get_closest_s2_image(aoi, date)
-        return None,None
+        if st.session_state.get(dates_key):
+            selected = st.selectbox(
+                f"Dates ({label})",
+                st.session_state[dates_key],
+                key=f"sel_{label}",
+                format_func=lambda d: d.strftime("%Y-%m-%d")
+            )
+            if st.button(f"Charger cette tuile ({label})"):
+                return get_closest_s2_image(aoi, selected)
+
+        return None, None
 
     if mode == "Recherche par mois":
-        year = st.selectbox("Année :", list(range(2017, datetime.date.today().year+1))[::-1])
-        month = st.selectbox("Mois :", range(1,13), format_func=lambda x: f"{x:02d}")
 
-        start = f"{year}-{month:02d}-01"
-        end   = f"{year+1}-01-01" if month==12 else f"{year}-{month+1:02d}-01"
+        year = st.selectbox(
+            f"Année ({label})",
+            list(range(2017, datetime.date.today().year + 1))[::-1],
+            key=f"year_{label}"
+        )
 
-        if st.button("Rechercher"):
+        month_list = [
+            ("01","Janvier"),("02","Février"),("03","Mars"),("04","Avril"),
+            ("05","Mai"),("06","Juin"),("07","Juillet"),("08","Août"),
+            ("09","Septembre"),("10","Octobre"),("11","Novembre"),("12","Décembre")
+        ]
+
+        month_num, _ = st.selectbox(
+            f"Mois ({label})",
+            month_list,
+            key=f"month_{label}",
+            format_func=lambda x: x[1]
+        )
+
+        start = f"{year}-{month_num}-01"
+        end = f"{year+1}-01-01" if month_num == "12" else f"{year}-{int(month_num)+1:02d}-01"
+
+        if st.button(f"Rechercher ({label})"):
             col = (
                 ee.ImageCollection("COPERNICUS/S2_SR")
                 .filterBounds(aoi)
-                .filterDate(start,end)
+                .filterDate(start, end)
                 .sort("system:time_start", False)
             )
             timestamps = col.aggregate_array("system:time_start").getInfo()
 
             if not timestamps:
-                st.error("❌ Aucune image ce mois.")
-                return None,None
+                st.error("❌ Aucune tuile ce mois.")
+                return None, None
 
-            dates = sorted({
-                datetime.datetime.fromtimestamp(t/1000, datetime.UTC).date()
-                for t in timestamps
-            }, reverse=True)
+            month_dates = sorted(
+                {datetime.datetime.fromtimestamp(t/1000, datetime.UTC).date()
+                 for t in timestamps},
+                reverse=True
+            )
 
-            st.session_state[key] = dates
+            st.session_state[dates_key] = month_dates
 
-        if st.session_state.get(key):
-            date = st.selectbox("Dates trouvées :", st.session_state[key])
-            if st.button("Charger image"):
-                return get_closest_s2_image(aoi, date)
+        if st.session_state.get(dates_key):
+            selected = st.selectbox(
+                f"Dates du mois ({label})",
+                st.session_state[dates_key],
+                key=f"sel_month_{label}"
+            )
+            if st.button(f"Charger date ({label})"):
+                return get_closest_s2_image(aoi, selected)
 
-        return None,None
+        return None, None
 
 # ============================================================
-# ✅ ANALYSE NDVI
+# ✅ ANALYSE SIMPLE (VERSION QUI MARCHAIT)
 # ============================================================
-st.header("🟩 Analyse NDVI")
+st.header("🟩 Analyse NDVI — 1 Date")
 
-img, dsel = tuile_selector("dates_simple")
+img, d = tuile_selector("SIMPLE", "available_dates_single")
 
-# Footprint
-if img:
-    st.write("DEBUG Footprint :", img.geometry().bounds().getInfo())
+# DEBUG footprint (identique)
+if img is not None:
+    try:
+        st.write("DEBUG S2 footprint :", img.geometry().bounds().getInfo())
+    except Exception as e:
+        st.error(f"Erreur debug footprint : {e}")
 
-if img and dsel:
+# ✅ Calcul NDVI
+if img is not None and d is not None:
+
+    st.session_state.date_single = d
 
     ndvi = compute_ndvi(img)
-    veg_mask = compute_vegetation_mask(ndvi,0.25)
+    veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
     rows = []
-
-    for f in features:
-        ilot = f["properties"].get("NUM_ILOT","")
-        geom  = f["geometry"]
-        geom_ee = shapely_to_ee(geom)
-
-        # DEBUG PIXELS
-        try:
-            px = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
-        except Exception as e:
-            px = f"Erreur : {e}"
-        st.write(f"DEBUG pixels {ilot} :", px)
+    for feat in features:
+        geom = feat["geometry"]
+        num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
 
         nd_mean, veg_prop = zonal_stats_ndvi(ndvi, veg_mask, geom)
-        classe, couleur = classify_ndvi(nd_mean)
+        classe_txt, col = classify_ndvi(nd_mean)
 
         rows.append({
-            "NUM_ILOT": ilot,
+            "NUM_ILOT": num_ilot,
             "NDVI_moyen": nd_mean,
-            "Classe": classe,
+            "Classe": classe_txt,
+            "Proportion": veg_prop,
             "Couvert": covered(veg_prop),
+            "Date": str(d)
         })
 
-    df = pd.DataFrame(rows)
+    st.session_state.result_single = pd.DataFrame(rows)
+
+# ✅ AFFICHAGE
+if st.session_state.result_single is not None:
+
+    df = st.session_state.result_single
+
+    st.success(f"✅ Résultats NDVI — {st.session_state.date_single}")
     st.dataframe(df)
 
-    # Carte NDVI
-    m = folium.Map(location=[(miny+maxy)/2,(minx+maxx)/2], zoom_start=14)
-    for i, f in enumerate(features):
-        nd = df.iloc[i]["NDVI_moyen"]
-        col = colorize(nd)
+    m = folium.Map(location=[(miny+maxy)/2, (minx+maxx)/2], zoom_start=14)
+
+    for idx, feat in enumerate(features):
+        geom = feat["geometry"]
+        nd = df.iloc[idx]["NDVI_moyen"]
+        color = colorize(nd)
+
+        tooltip_html = (
+            f"<b>Ilot :</b> {df.iloc[idx]['NUM_ILOT']}<br>"
+            f"<b>NDVI :</b> {fmt(nd)}<br>"
+            f"<b>Classe :</b> {df.iloc[idx]['Classe']}"
+        )
 
         folium.GeoJson(
-            f["geometry"].__geo_interface__,
-            style_function=lambda x, c=col: {
-                "fillColor": c,
+            geom.__geo_interface__,
+            style_function=lambda x, col=color: {
+                "fillColor": col,
                 "color": "black",
                 "weight": 1,
-                "fillOpacity": 0.7,
+                "fillOpacity": 0.7
             },
-            tooltip=f"Ilot : {df.iloc[i]['NUM_ILOT']}<br>NDVI : {fmt(nd)}"
+            tooltip=tooltip_html
         ).add_to(m)
 
     st_folium(m, height=600)
