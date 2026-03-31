@@ -10,3 +10,4 @@ streamlit-folium
 pyproj
 pyshp
 rasterio
+pyogrio
