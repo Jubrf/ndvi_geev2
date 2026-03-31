@@ -2,51 +2,59 @@ import ee
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import transform
 
+# ============================================================
+# ✅ Conversion Shapely → Earth Engine (SHP uniquement)
+# ============================================================
 def shapely_to_ee(geom):
     """
     Conversion robuste Shapely -> Earth Engine
     Compatible Polygon et MultiPolygon
     """
-    from shapely.geometry import Polygon, MultiPolygon
 
-    # assurer 2D
-    def strip_z(x, y, z=None): return (x, y)
+    # Supprimer le Z éventuel
+    def strip_z(x, y, z=None):
+        return (x, y)
+
     geom2d = transform(strip_z, geom)
 
+    # Polygon simple
     if isinstance(geom2d, Polygon):
-        exterior = list(geom2d.exterior.coords)
-        return ee.Geometry.Polygon([exterior])
+        coords = list(geom2d.exterior.coords)
+        return ee.Geometry.Polygon([coords])
 
+    # MultiPolygon
     if isinstance(geom2d, MultiPolygon):
         parts = []
         for poly in geom2d.geoms:
-            ext = list(poly.exterior.coords)
-            parts.append([ext])
+            coords = list(poly.exterior.coords)
+            parts.append([coords])
         return ee.Geometry.MultiPolygon(parts)
 
     return None
 
+
+# ============================================================
+# ✅ Zonal stats NDVI
+# ============================================================
 def zonal_stats_ndvi(ndvi_img, veg_mask, geom):
     """
-    Calcule :
-    ✅ NDVI moyen
-    ✅ proportion NDVI > 0.25
-    ✅ Version épurée : SHP uniquement
+    Calcule NDVI moyen + proportion NDVI > 0.25
+    Version stable pour SHP uniquement
     """
 
-    # ✅ Corrige automatiquement les polygones “légèrement” invalides
+    # Corriger les géométries invalides
     geom = geom.buffer(0)
 
-    # ✅ Conversion Shapely -> Earth Engine
+    # Convertir en Earth Engine
     geom_ee = shapely_to_ee(geom)
     if geom_ee is None:
         return None, None
 
-    # ✅ Clip indispensable pour éviter NDVI=None sur bords de dalle
+    # Clip NDVI à la géométrie
     nd_local = ndvi_img.clip(geom_ee)
     veg_local = veg_mask.clip(geom_ee) if veg_mask is not None else None
 
-    # ✅ NDVI moyen
+    # NDVI moyen
     mean_dict = nd_local.reduceRegion(
         reducer=ee.Reducer.mean(),
         geometry=geom_ee,
@@ -58,11 +66,10 @@ def zonal_stats_ndvi(ndvi_img, veg_mask, geom):
     if nd_mean is not None:
         nd_mean = float(nd_mean)
 
-    # ✅ Si pas de masque végétation (rare dans version épurée)
+    # Proportion NDVI > 0.25
     if veg_local is None:
         return nd_mean, None
 
-    # ✅ Proportion NDVI > 0.25
     veg_dict = veg_local.reduceRegion(
         reducer=ee.Reducer.mean(),
         geometry=geom_ee,
