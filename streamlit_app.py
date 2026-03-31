@@ -4,9 +4,11 @@ import pandas as pd
 from streamlit_folium import st_folium
 import datetime
 import ee
+import os
+import re
 
 # ============================================================
-# ✅ IMPORT UTILS (load_vector = ANCIEN, QUI MARCHE)
+# ✅ IMPORT UTILS — ANCIEN load_vector QUI MARCHE
 # ============================================================
 from utils.vector_io import load_vector
 from utils.gee_ndvi import (
@@ -17,10 +19,10 @@ from utils.gee_ndvi import (
     compute_ndvi,
     compute_vegetation_mask
 )
-from utils.ndvi_processing import zonal_stats_ndvi
+from utils.ndvi_processing import zonal_stats_ndvi   # version originale
 
 # ============================================================
-# ✅ Formatage NDVI
+# ✅ Format NDVI
 # ============================================================
 def fmt(v):
     try:
@@ -28,28 +30,39 @@ def fmt(v):
     except:
         return "NA"
 
+
 # ============================================================
-# ✅ INIT EARTH ENGINE
+# ✅ INIT GEE
 # ============================================================
 service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
 private_key = st.secrets["GEE_PRIVATE_KEY"]
 init_gee(service_account, private_key)
 
-st.title("🌱 NDVI – Analyse simple (Version stable)")
+st.title("🌱 NDVI – Analyse simple (version stable)")
 
 # ============================================================
-# ✅ UPLOAD SIG (SHP ZIP ou GeoJSON)
+# ✅ FILE UPLOAD
 # ============================================================
 uploaded = st.file_uploader("📁 Charger un SHP (ZIP) ou GEOJSON", type=["zip","geojson"])
 if not uploaded:
     st.stop()
 
-# ✅ UTILISE TON ANCIEN load_vector() QUI MARCHE
+# ✅ RESTAURER LES VARIABLES SESSION STATE (IMPORTANT !)
+if "result_single" not in st.session_state:
+    st.session_state.result_single = None
+if "date_single" not in st.session_state:
+    st.session_state.date_single = None
+if "available_dates_single" not in st.session_state:
+    st.session_state.available_dates_single = None
+
+# ============================================================
+# ✅ CHARGEMENT DU SIG (via ANCIEN load_vector)
+# ============================================================
 features = load_vector(uploaded)
 st.success(f"{len(features)} parcelles chargées ✅")
 
 # ============================================================
-# ✅ CALCUL AOI SANS REPROJECTION (load_vector s’en occupe déjà)
+# ✅ AOI — calculé directement depuis les géométries Shapely déjà WGS84
 # ============================================================
 geoms = [f["geometry"] for f in features]
 minx = min(g.bounds[0] for g in geoms)
@@ -60,7 +73,7 @@ maxy = max(g.bounds[3] for g in geoms)
 aoi = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
 
 # ============================================================
-# ✅ CLASSIFICATION & COULEURS (VERSION ORIGINALE)
+# ✅ CLASSIFICATION NDVI
 # ============================================================
 def classify_ndvi(nd):
     if nd is None: return ("Indéterminé", "#bdbdbd")
@@ -73,13 +86,17 @@ def covered(v):
     return "✅ Couvert" if v >= 0.5 else "❌ Non couvert"
 
 def colorize(nd):
-    if nd is None: return "#bbbbbb"
-    if nd < 0.25: return "#d73027"
-    if nd < 0.50: return "#fee08b"
+    if nd is None:
+        return "#bbbbbb"
+    if nd < 0.25:
+        return "#d73027"
+    if nd < 0.50:
+        return "#fee08b"
     return "#1a9850"
 
+
 # ============================================================
-# ✅ SELECTEUR TUILE (VERSION ORIGINALE)
+# ✅ SELECTEUR DE TUILE (version d’origine)
 # ============================================================
 def tuile_selector(label, dates_key):
 
@@ -89,11 +106,13 @@ def tuile_selector(label, dates_key):
         key=f"mode_{label}"
     )
 
+    # 👉 Dernière tuile
     if mode == "Dernière tuile":
         if st.button(f"Charger dernière tuile ({label})"):
             return get_latest_s2_image(aoi)
         return None, None
 
+    # 👉 Tuiles disponibles
     if mode == "Tuiles disponibles":
         if st.button(f"Voir tuiles ({label})"):
             st.session_state[dates_key] = get_available_s2_dates(aoi, 120)
@@ -102,7 +121,6 @@ def tuile_selector(label, dates_key):
             selected = st.selectbox(
                 f"Dates ({label})",
                 st.session_state[dates_key],
-                key=f"sel_{label}",
                 format_func=lambda d: d.strftime("%Y-%m-%d")
             )
             if st.button(f"Charger cette tuile ({label})"):
@@ -110,12 +128,11 @@ def tuile_selector(label, dates_key):
 
         return None, None
 
+    # 👉 Recherche par mois
     if mode == "Recherche par mois":
-
         year = st.selectbox(
             f"Année ({label})",
-            list(range(2017, datetime.date.today().year + 1))[::-1],
-            key=f"year_{label}"
+            list(range(2017, datetime.date.today().year + 1))[::-1]
         )
 
         month_list = [
@@ -127,20 +144,22 @@ def tuile_selector(label, dates_key):
         month_num, _ = st.selectbox(
             f"Mois ({label})",
             month_list,
-            key=f"month_{label}",
             format_func=lambda x: x[1]
         )
 
         start = f"{year}-{month_num}-01"
-        end = f"{year+1}-01-01" if month_num == "12" else f"{year}-{int(month_num)+1:02d}-01"
+        end   = f"{year+1}-01-01" if month_num == "12" \
+                else f"{year}-{int(month_num)+1:02d}-01"
 
         if st.button(f"Rechercher ({label})"):
+
             col = (
                 ee.ImageCollection("COPERNICUS/S2_SR")
                 .filterBounds(aoi)
                 .filterDate(start, end)
                 .sort("system:time_start", False)
             )
+
             timestamps = col.aggregate_array("system:time_start").getInfo()
 
             if not timestamps:
@@ -156,24 +175,26 @@ def tuile_selector(label, dates_key):
             st.session_state[dates_key] = month_dates
 
         if st.session_state.get(dates_key):
+
             selected = st.selectbox(
                 f"Dates du mois ({label})",
-                st.session_state[dates_key],
-                key=f"sel_month_{label}"
+                st.session_state[dates_key]
             )
+
             if st.button(f"Charger date ({label})"):
                 return get_closest_s2_image(aoi, selected)
 
         return None, None
 
+
 # ============================================================
-# ✅ ANALYSE SIMPLE (VERSION QUI MARCHAIT)
+# ✅ ANALYSE NDVI — Version ORIGINALE (qui marchait)
 # ============================================================
 st.header("🟩 Analyse NDVI — 1 Date")
 
 img, d = tuile_selector("SIMPLE", "available_dates_single")
 
-# DEBUG footprint (identique)
+# DEBUG footprint
 if img is not None:
     try:
         st.write("DEBUG S2 footprint :", img.geometry().bounds().getInfo())
@@ -189,6 +210,7 @@ if img is not None and d is not None:
     veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
     rows = []
+
     for feat in features:
         geom = feat["geometry"]
         num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
@@ -199,15 +221,18 @@ if img is not None and d is not None:
         rows.append({
             "NUM_ILOT": num_ilot,
             "NDVI_moyen": nd_mean,
-            "Classe": classe_txt,
+            "Classe":    classe_txt,
             "Proportion": veg_prop,
-            "Couvert": covered(veg_prop),
+            "Couvert":   covered(veg_prop),
             "Date": str(d)
         })
 
     st.session_state.result_single = pd.DataFrame(rows)
 
-# ✅ AFFICHAGE
+
+# ============================================================
+# ✅ AFFICHAGE RÉSULTATS + CARTE
+# ============================================================
 if st.session_state.result_single is not None:
 
     df = st.session_state.result_single
