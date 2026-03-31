@@ -229,16 +229,20 @@ if img is not None and d is not None:
             px = f"Erreur : {e}"
         st.write(f"DEBUG pixels pour {num_ilot} :", px)
 
-        nd_mean, veg_prop    = zonal_stats_ndvi(ndvi, veg_mask, geom)
-        classe_txt, _        = classify_ndvi(nd_mean)
+        nd_mean, veg_prop, quality_pct = zonal_stats_ndvi(ndvi, veg_mask, geom)
+        classe_txt, _                  = classify_ndvi(nd_mean)
+
+        if quality_pct is not None and quality_pct < 50:
+            st.warning(f"⚠️ {num_ilot} : seulement {quality_pct}% de pixels valides (nuages/ombres détectés)")
 
         rows.append({
-            "NUM_ILOT"   : num_ilot,
-            "NDVI_moyen" : nd_mean,
-            "Classe"     : classe_txt,
-            "Proportion" : veg_prop,
-            "Couvert"    : covered(veg_prop),
-            "Date"       : str(d)
+            "NUM_ILOT"       : num_ilot,
+            "NDVI_moyen"     : nd_mean,
+            "Classe"         : classe_txt,
+            "Proportion_veg" : veg_prop,
+            "Couvert"        : covered(veg_prop),
+            "Qualite_pixels" : f"{quality_pct}%" if quality_pct is not None else "NA",
+            "Date"           : str(d)
         })
 
     st.session_state.result_single = pd.DataFrame(rows)
