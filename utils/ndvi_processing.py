@@ -30,15 +30,16 @@ def shapely_to_ee(geom):
 # Zonal stats NDVI + EVI2 + qualité pixels — TOUTES LES PARCELLES
 # en un seul appel reduceRegions côté GEE.
 # ============================================================
-def zonal_stats_all(ndvi_img, evi2_img, veg_mask, features):
+def zonal_stats_all(ndvi_img, evi2_img, ndti_img, veg_mask, features):
     """
     ndvi_img  : ee.Image bande "NDVI"
     evi2_img  : ee.Image bande "EVI2"
+    ndti_img  : ee.Image bande "NDTI"
     veg_mask  : ee.Image bande "VEG"
     features  : list[dict] avec clés "geometry" (Shapely) et "properties"
 
     Retourne list[dict] :
-      { num_ilot, nd_mean, evi2_mean, veg_prop, quality_pct }
+      { num_ilot, nd_mean, evi2_mean, ndti_mean, veg_prop, quality_pct }
     """
 
     # ----------------------------------------------------------
@@ -63,6 +64,7 @@ def zonal_stats_all(ndvi_img, evi2_img, veg_mask, features):
     stack_mean = (
         ndvi_img.rename("NDVI")
         .addBands(evi2_img.rename("EVI2"))
+        .addBands(ndti_img.rename("NDTI"))
         .addBands(veg_mask.rename("VEG"))
     )
 
@@ -127,6 +129,7 @@ def zonal_stats_all(ndvi_img, evi2_img, veg_mask, features):
 
         nd_mean   = m.get("NDVI",  None)
         evi2_mean = m.get("EVI2",  None)
+        ndti_mean = m.get("NDTI",  None)
         veg_prop  = m.get("VEG",   None)
         c_valid   = cv.get("count_valid", 0) or 0
         c_total   = ct.get("count_total", 0) or 0
@@ -139,6 +142,7 @@ def zonal_stats_all(ndvi_img, evi2_img, veg_mask, features):
             "num_ilot"   : num_ilot,
             "nd_mean"    : float(nd_mean)   if nd_mean   is not None else None,
             "evi2_mean"  : float(evi2_mean) if evi2_mean is not None else None,
+            "ndti_mean"  : float(ndti_mean) if ndti_mean is not None else None,
             "veg_prop"   : float(veg_prop)  if veg_prop  is not None else None,
             "quality_pct": quality_pct,
         })
