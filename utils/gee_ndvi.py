@@ -130,15 +130,18 @@ def get_latest_s2_image(aoi, features, max_days=30):
 # dérivée (bbox arrondie + nb parcelles) calculée côté appelant.
 # ----------------------------------------------------------
 @st.cache_data(show_spinner="Recherche des dates disponibles…")
-def get_available_s2_dates(aoi, features_cache_key, features_geojson, max_days=120):
+def get_available_s2_dates(_aoi, features_cache_key, _features_geojson, max_days=120):
     """
-    features_cache_key : str — clé stable pour le cache (bbox + nb parcelles)
-    features_geojson   : list[dict] — géométries __geo_interface__ sérialisées
+    Paramètres préfixés _ : ignorés du hash Streamlit (non-hashables).
+    La clé de cache effective = features_cache_key + max_days.
+
+    features_cache_key : str  — bbox arrondie + nb parcelles
+    _features_geojson  : list[dict] — géométries __geo_interface__
     """
     today = datetime.date.today()
     start = today - datetime.timedelta(days=max_days)
 
-    geoms_ee = [ee.Geometry(g) for g in features_geojson]
+    geoms_ee = [ee.Geometry(g) for g in _features_geojson]
     geom_ee  = geoms_ee[0]
     for g in geoms_ee[1:]:
         try:
