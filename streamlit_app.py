@@ -16,9 +16,9 @@ from utils.gee_ndvi import (
     compute_vegetation_mask,
     _build_geom_ee,
     _COLLECTIONS,
-    compute_evi2     # ✅ AJOUT EVI2
+    compute_evi2,
 )
-from utils.ndvi_processing import zonal_stats_ndvi
+from utils.ndvi_processing import zonal_stats_all
 
 # ============================================================
 # FORMAT NDVI
@@ -30,7 +30,7 @@ def fmt(v):
         return "NA"
 
 # ============================================================
-# INIT GEE
+# INIT GEE  (@st.cache_resource dans gee_ndvi.py)
 # ============================================================
 service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
 private_key     = st.secrets["GEE_PRIVATE_KEY"]
@@ -65,7 +65,7 @@ if "date_single"            not in st.session_state: st.session_state.date_singl
 if "available_dates_single" not in st.session_state: st.session_state.available_dates_single = None
 
 # ============================================================
-# CHARGEMENT VECTEUR
+# CHARGEMENT VECTEUR  (@st.cache_data dans load_vector)
 # ============================================================
 features = load_vector(uploaded)
 st.success(f"{len(features)} parcelles chargées ✅")
@@ -87,13 +87,23 @@ aoi   = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
 st.write("DEBUG AOI (WGS84):", [minx, miny, maxx, maxy])
 
 # ============================================================
+# Clé de cache stable pour les features (bbox + nb parcelles)
+# ============================================================
+def _features_cache_key(features, minx, miny, maxx, maxy):
+    return f"{len(features)}|{minx:.4f},{miny:.4f},{maxx:.4f},{maxy:.4f}"
+
+def _features_geojson(features):
+    """Sérialise les géométries Shapely en dicts GeoJSON pour cache_data."""
+    return [f["geometry"].__geo_interface__ for f in features]
+
+# ============================================================
 # CLASSIFICATION NDVI
 # ============================================================
 def classify_ndvi(nd):
-    if nd is None:      return ("Indéterminé",     "#bdbdbd")
-    if nd < 0.25:       return ("Sol nu",           "#d73027")
-    if nd < 0.50:       return ("Végétation faible","#fee08b")
-    return                     ("Végétation dense", "#1a9850")
+    if nd is None:      return ("Indéterminé",      "#bdbdbd")
+    if nd < 0.25:       return ("Sol nu",            "#d73027")
+    if nd < 0.50:       return ("Végétation faible", "#fee08b")
+    return                     ("Végétation dense",  "#1a9850")
 
 def covered(v):
     if v is None: return "Indéterminé"
@@ -106,32 +116,21 @@ def colorize(nd):
     return                "#1a9850"
 
 # ============================================================
-# ✅ AJOUT : INTERPRÉTATION NDVI + EVI2
+# INTERPRÉTATION NDVI + EVI2
 # ============================================================
 def interpret_ndvi_evi(nd, evi):
     if nd is None or evi is None:
         return "Indéterminé"
-
-    # Sol nu ou résidus secs
     if nd < 0.10 and evi < 0.07:
         return "Sol nu / résidus"
-
-    # Levée de blé/orge : NDVI faible mais cohérent avec EVI2
     if nd < 0.20 and abs(nd - evi) < 0.05:
         return "Levée végétale (blé/orge)"
-
-    # Sol clair : NDVI artificiellement élevé
     if nd < 0.20 and nd > evi * 1.8:
         return "Sol clair / résidus"
-
-    # Saturation NDVI
     if nd > 0.80:
         return "Couvert très dense (saturation NDVI)"
-
-    # Végétation significative
     if nd >= 0.25:
         return "Couvert végétal présent"
-
     return "Indéterminé"
 
 
@@ -153,7 +152,9 @@ def tuile_selector(label, dates_key):
 
     if mode == "Tuiles disponibles":
         if st.button(f"Voir tuiles ({label})"):
-            st.session_state[dates_key] = get_available_s2_dates(aoi, features)
+            cache_key  = _features_cache_key(features, minx, miny, maxx, maxy)
+            geojson    = _features_geojson(features)
+            st.session_state[dates_key] = get_available_s2_dates(aoi, cache_key, geojson)
 
         if st.session_state.get(dates_key):
             selected = st.selectbox(
@@ -222,6 +223,7 @@ def tuile_selector(label, dates_key):
 
         return None, None
 
+
 # ============================================================
 # ANALYSE NDVI + EVI2
 # ============================================================
@@ -241,41 +243,31 @@ if img is not None and d is not None:
     st.session_state.date_single = d
 
     ndvi     = compute_ndvi(img)
-    evi2     = compute_evi2(img)       # ✅ AJOUT EVI2
+    evi2     = compute_evi2(img)
     veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
+    # DEBUG pixels (premier ilot uniquement pour ne pas surcharger)
+    try:
+        geom_ee_first = ee.Geometry(features[0]["geometry"].__geo_interface__)
+        px = ndvi.sample(region=geom_ee_first, scale=10).size().getInfo()
+        st.write(f"DEBUG pixels (1er ilot) :", px)
+    except Exception as e:
+        st.write(f"DEBUG pixels erreur :", str(e))
+
+    # ── reduceRegions : 1 seul appel GEE pour toutes les parcelles ──
+    with st.spinner("Calcul des stats zonales en cours…"):
+        stats = zonal_stats_all(ndvi, evi2, veg_mask, features)
+
     rows = []
-    for feat in features:
-
-        geom     = feat["geometry"]
+    for feat, s in zip(features, stats):
         num_ilot = feat["properties"].get("NUM_ILOT", "ILOT")
+        nd_mean   = s["nd_mean"]
+        evi2_mean = s["evi2_mean"]
+        veg_prop  = s["veg_prop"]
+        quality_pct = s["quality_pct"]
 
-        # DEBUG pixels
-        try:
-            geom_ee = ee.Geometry(geom.__geo_interface__)
-            px      = ndvi.sample(region=geom_ee, scale=10).size().getInfo()
-        except Exception as e:
-            px = f"Erreur : {e}"
-        st.write(f"DEBUG pixels pour {num_ilot} :", px)
-
-        # Moyennes NDVI
-        nd_mean, veg_prop, quality_pct = zonal_stats_ndvi(ndvi, veg_mask, geom)
         classe_txt, _ = classify_ndvi(nd_mean)
-
-        # ✅ échantillon NDVI
-        try:
-            nd_sample = ndvi.sample(region=geom_ee, scale=10).first().get("NDVI").getInfo()
-        except:
-            nd_sample = None
-
-        # ✅ échantillon EVI2
-        try:
-            evi_sample = evi2.sample(region=geom_ee, scale=10).first().get("EVI2").getInfo()
-        except:
-            evi_sample = None
-
-        # ✅ Interprétation NDVI + EVI2
-        interpretation = interpret_ndvi_evi(nd_sample, evi_sample)
+        interpretation = interpret_ndvi_evi(nd_mean, evi2_mean)
 
         if quality_pct is not None and quality_pct < 50:
             st.warning(f"⚠️ {num_ilot} : seulement {quality_pct}% de pixels valides (nuages/ombres détectés)")
@@ -283,14 +275,13 @@ if img is not None and d is not None:
         rows.append({
             "NUM_ILOT"       : num_ilot,
             "NDVI_moyen"     : nd_mean,
-            "NDVI_sample"    : nd_sample,
-            "EVI2_sample"    : evi_sample,
+            "EVI2_moyen"     : evi2_mean,
             "Interprétation" : interpretation,
             "Classe"         : classe_txt,
             "Proportion_veg" : veg_prop,
             "Couvert"        : covered(veg_prop),
             "Qualite_pixels" : f"{quality_pct}%" if quality_pct is not None else "NA",
-            "Date"           : str(d)
+            "Date"           : str(d),
         })
 
     st.session_state.result_single = pd.DataFrame(rows)
@@ -325,6 +316,7 @@ if st.session_state.result_single is not None:
         tooltip_html = (
             f"<b>Ilot :</b> {df.iloc[idx]['NUM_ILOT']}<br>"
             f"<b>NDVI :</b> {fmt(nd)}<br>"
+            f"<b>EVI2 :</b> {fmt(df.iloc[idx]['EVI2_moyen'])}<br>"
             f"<b>Classe :</b> {df.iloc[idx]['Classe']}<br>"
             f"<b>Interprétation :</b> {df.iloc[idx]['Interprétation']}"
         )
@@ -332,7 +324,7 @@ if st.session_state.result_single is not None:
         folium.GeoJson(
             geom.__geo_interface__,
             style_function=lambda x, col=color: {
-                "fillColor": col,
+                "fillColor" : col,
                 "color"     : "black",
                 "weight"    : 1,
                 "fillOpacity": 0.7
