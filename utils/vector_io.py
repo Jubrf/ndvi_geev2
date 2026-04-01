@@ -3,23 +3,28 @@ import json
 import zipfile
 import os
 import shapefile
+import streamlit as st
 from shapely.geometry import shape
 from shapely.ops import transform
 import pyproj
 
-def load_vector(uploaded):
-    suffix = ".zip" if uploaded.name.endswith(".zip") else ".geojson"
+
+# cache_data sur les bytes bruts : même fichier → pas de re-parsing.
+# On passe les bytes explicitement pour que Streamlit puisse les hasher.
+@st.cache_data(show_spinner="Chargement du fichier vecteur…")
+def _load_vector_from_bytes(file_bytes, filename):
+    """Parsing SHP/GeoJSON depuis les bytes bruts. Caché par contenu."""
+    suffix = ".zip" if filename.endswith(".zip") else ".geojson"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded.read())
+    tmp.write(file_bytes)
     tmp.close()
 
     if suffix == ".geojson":
         with open(tmp.name, "r") as f:
             data = json.load(f)
-
         features = []
         for feat in data["features"]:
-            geom = shape(feat["geometry"])
+            geom  = shape(feat["geometry"])
             props = feat.get("properties", {})
             features.append({"geometry": geom, "properties": props})
         return features
@@ -33,8 +38,8 @@ def load_vector(uploaded):
     shp_path = os.path.join(extract, shp)
 
     sf = shapefile.Reader(shp_path)
-    fields = [f[0] for f in sf.fields if f[0] != 'DeletionFlag']
-    shapes = sf.shapes()
+    fields = [f[0] for f in sf.fields if f[0] != "DeletionFlag"]
+    shapes  = sf.shapes()
     records = sf.records()
 
     prj = shp_path.replace(".shp", ".prj")
@@ -51,11 +56,18 @@ def load_vector(uploaded):
             pass
 
     features = []
-    for shp, rec in zip(shapes, records):
-        geom = shape(shp.__geo_interface__)
+    for shp_rec, rec in zip(shapes, records):
+        geom = shape(shp_rec.__geo_interface__)
         if transformer:
             geom = transform(transformer, geom)
         props = dict(zip(fields, rec))
         features.append({"geometry": geom, "properties": props})
 
-    return features# sentinel_download code placeholder
+    return features
+
+
+def load_vector(uploaded):
+    """Point d'entrée public. Lit les bytes une seule fois et délègue au cache."""
+    file_bytes = uploaded.read()
+    uploaded.seek(0)  # rewind pour usage ultérieur éventuel
+    return _load_vector_from_bytes(file_bytes, uploaded.name)
