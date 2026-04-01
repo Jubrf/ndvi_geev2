@@ -1,9 +1,13 @@
 import ee
 import datetime
+import streamlit as st
 
 # ----------------------------------------------------------
 # INITIALISATION GEE
+# cache_resource : connexion EE partagée pour toute la session,
+# jamais réinitialisée sauf redémarrage du process.
 # ----------------------------------------------------------
+@st.cache_resource
 def init_gee(service_account, private_key):
     credentials = ee.ServiceAccountCredentials(service_account, key_data=private_key)
     ee.Initialize(credentials)
@@ -121,11 +125,26 @@ def get_latest_s2_image(aoi, features, max_days=30):
 
 # ----------------------------------------------------------
 # LISTE DES DATES DISPONIBLES
+# cache_data : les dates GEE ne changent pas pendant une session.
+# features n'est pas hashable directement → on passe une cache_key
+# dérivée (bbox arrondie + nb parcelles) calculée côté appelant.
 # ----------------------------------------------------------
-def get_available_s2_dates(aoi, features, max_days=120):
-    today   = datetime.date.today()
-    start   = today - datetime.timedelta(days=max_days)
-    geom_ee = _build_geom_ee(features)
+@st.cache_data(show_spinner="Recherche des dates disponibles…")
+def get_available_s2_dates(aoi, features_cache_key, features_geojson, max_days=120):
+    """
+    features_cache_key : str — clé stable pour le cache (bbox + nb parcelles)
+    features_geojson   : list[dict] — géométries __geo_interface__ sérialisées
+    """
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=max_days)
+
+    geoms_ee = [ee.Geometry(g) for g in features_geojson]
+    geom_ee  = geoms_ee[0]
+    for g in geoms_ee[1:]:
+        try:
+            geom_ee = geom_ee.union(g)
+        except:
+            pass
 
     all_dates = set()
     for colname in _COLLECTIONS:
