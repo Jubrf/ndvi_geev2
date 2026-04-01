@@ -209,3 +209,18 @@ def compute_evi2(img):
         nir.add(red.multiply(2.4)).add(1)
     ).multiply(2.5)
     return evi2.rename("EVI2")
+
+
+# ----------------------------------------------------------
+# NDTI (Normalized Difference Tillage Index)
+# ----------------------------------------------------------
+def compute_ndti(img):
+    """
+    NDTI = (B11 - B12) / (B11 + B12)
+    Sentinel-2 : B11 = SWIR1 (1610nm), B12 = SWIR2 (2190nm)
+    Valeurs typiques :
+      Sol nu          : négatif à ~0
+      Résidus culture : 0.05 – 0.20
+      Végétation verte: négatif (eau foliaire absorbe SWIR)
+    """
+    return img.normalizedDifference(["B11", "B12"]).rename("NDTI")
