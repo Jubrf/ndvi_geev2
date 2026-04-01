@@ -16,6 +16,7 @@ from utils.gee_ndvi import (
     _build_geom_ee,
     _COLLECTIONS,
     compute_evi2,
+    compute_ndti,
 )
 from utils.ndvi_processing import zonal_stats_all
 
@@ -103,31 +104,68 @@ def classify_ndvi(nd):
     if nd < 0.50:  return ("Végétation faible",  "#fee08b")
     return                ("Végétation dense",   "#1a9850")
 
-def colorize(nd, quality_pct):
-    """Gris foncé si nuages (nd None ou qualité < 50%), sinon couleur NDVI."""
-    if nd is None or (quality_pct is not None and quality_pct < 50):
-        return "#9e9e9e"
-    if nd < 0.25:  return "#d73027"
-    if nd < 0.50:  return "#fee08b"
-    return                "#1a9850"
+# Palette couleurs par catégorie d'interprétation
+_COLOR_MAP = {
+    "Sol nu"                          : "#d73027",   # rouge
+    "Résidus de culture"              : "#f46d43",   # orange
+    "Sol nu / résidus (incertain)"    : "#fdae61",   # orange clair
+    "Germination (incertain)"         : "#a6d96a",   # vert clair
+    "Couvert en développement"        : "#66bd63",   # vert moyen
+    "Couvert en place"                : "#1a9850",   # vert foncé
+    "Végétation dense (couvert établi)": "#006837",  # vert très foncé
+    "Données manquantes"              : "#9e9e9e",   # gris
+    "Données manquantes (nuages)"     : "#9e9e9e",
+}
+
+def colorize(interpretation):
+    for key, color in _COLOR_MAP.items():
+        if interpretation.startswith(key):
+            return color
+    return "#9e9e9e"
 
 # ============================================================
-# INTERPRÉTATION NDVI + EVI2
+# INTERPRÉTATION NDVI + EVI2 + NDTI
+# Logique one-shot (une date).
+# Seuils :
+#   NDTI > 0.08  → résidus de culture détectés
+#   EVI2 > 0.10 et |NDVI-EVI2| < 0.06 → germination cohérente
 # ============================================================
-def interpret_ndvi_evi(nd, evi):
-    if nd is None or evi is None:
-        return "Indéterminé"
-    if nd < 0.10 and evi < 0.07:
-        return "Sol nu / résidus"
-    if nd < 0.20 and abs(nd - evi) < 0.05:
-        return "Levée végétale (blé/orge)"
-    if nd < 0.20 and nd > evi * 1.8:
-        return "Sol clair / résidus"
+_NDTI_RESIDUS = 0.08
+
+def classify_state(nd, evi, ndti):
+    """
+    Retourne (interpretation: str, couvert: bool|None)
+    couvert=True  → sol couvert
+    couvert=False → sol nu / résidus
+    couvert=None  → données manquantes
+    """
+    if nd is None:
+        return "Données manquantes", None
+
+    # ── NDVI > 0.50 : végétation établie ─────────────────────
     if nd > 0.80:
-        return "Couvert très dense (saturation NDVI)"
+        return "Végétation dense (couvert établi)", True
+    if nd >= 0.50:
+        return "Couvert en place", True
+
+    # ── NDVI 0.25–0.50 : couvert en développement ────────────
     if nd >= 0.25:
-        return "Couvert végétal présent"
-    return "Indéterminé"
+        return "Couvert en développement", True
+
+    # ── NDVI 0.15–0.25 : zone ambiguë ────────────────────────
+    if nd >= 0.15:
+        # Germination : EVI2 cohérent avec NDVI (peu d'écart)
+        if evi is not None and evi > 0.10 and abs(nd - evi) < 0.06:
+            return "Germination (incertain)", True
+        # Résidus : NDTI positif significatif
+        if ndti is not None and ndti > _NDTI_RESIDUS:
+            return "Résidus de culture", False
+        return "Sol nu / résidus (incertain)", False
+
+    # ── NDVI < 0.15 : sol nu ou résidus ──────────────────────
+    if ndti is not None and ndti > _NDTI_RESIDUS:
+        return "Résidus de culture", False
+    return "Sol nu", False
 
 
 # ============================================================
@@ -216,6 +254,7 @@ if img is not None and d is not None:
 
     ndvi     = compute_ndvi(img)
     evi2     = compute_evi2(img)
+    ndti     = compute_ndti(img)
     veg_mask = compute_vegetation_mask(ndvi, 0.25)
 
     # DEBUG pixels (premier ilot uniquement)
@@ -228,7 +267,7 @@ if img is not None and d is not None:
 
     with st.spinner("Calcul des stats zonales en cours…"):
         try:
-            stats = zonal_stats_all(ndvi, evi2, veg_mask, features)
+            stats = zonal_stats_all(ndvi, evi2, ndti, veg_mask, features)
         except Exception as e:
             st.error(f"❌ Erreur zonal_stats_all : {e}")
             st.stop()
@@ -238,19 +277,25 @@ if img is not None and d is not None:
         num_ilot    = feat["properties"].get("NUM_ILOT", "ILOT")
         nd_mean     = s["nd_mean"]
         evi2_mean   = s["evi2_mean"]
+        ndti_mean   = s["ndti_mean"]
         quality_pct = s["quality_pct"]
 
-        classe_txt, _ = classify_ndvi(nd_mean)
-        interpretation = interpret_ndvi_evi(nd_mean, evi2_mean)
+        # Données inutilisables si couverture nuageuse trop forte
+        if quality_pct is not None and quality_pct < 50:
+            interpretation = "Données manquantes (nuages)"
+            couvert        = None
+        else:
+            interpretation, couvert = classify_state(nd_mean, evi2_mean, ndti_mean)
 
         rows.append({
-            "NUM_ILOT"       : num_ilot,
-            "NDVI_moyen"     : nd_mean,
-            "EVI2_moyen"     : evi2_mean,
-            "Interprétation" : interpretation,
-            "Classe"         : classe_txt,
-            "Qualite_pixels" : f"{quality_pct}%" if quality_pct is not None else "NA",
-            "Date"           : str(d),
+            "NUM_ILOT"        : num_ilot,
+            "NDVI_moyen"      : round(nd_mean,   3) if nd_mean   is not None else None,
+            "EVI2_moyen"      : round(evi2_mean, 3) if evi2_mean is not None else None,
+            "NDTI_moyen"      : round(ndti_mean, 3) if ndti_mean is not None else None,
+            "Interpretation"  : interpretation,
+            "Couvert"         : "✅ Oui" if couvert is True else ("❌ Non" if couvert is False else "—"),
+            "Qualite_pixels"  : f"{quality_pct}%" if quality_pct is not None else "NA",
+            "Date"            : str(d),
         })
 
     st.session_state.result_single = pd.DataFrame(rows)
@@ -281,29 +326,19 @@ if st.session_state.result_single is not None:
     m = folium.Map(location=[(miny + maxy) / 2, (minx + maxx) / 2], zoom_start=14)
 
     for idx, feat in enumerate(features):
-        geom        = feat["geometry"]
-        nd          = df.iloc[idx]["NDVI_moyen"]
-        quality_pct = stats_raw[idx]["quality_pct"] if idx < len(stats_raw) else None
-        color       = colorize(nd, quality_pct)
-
-        if nd is None or (quality_pct is not None and quality_pct < 50):
-            ndvi_txt  = "NA (nuages)"
-            evi2_txt  = "NA"
-            interp    = "Données manquantes (couverture nuageuse)"
-            classe    = "—"
-        else:
-            ndvi_txt  = fmt(nd)
-            evi2_txt  = fmt(df.iloc[idx]["EVI2_moyen"])
-            interp    = df.iloc[idx]["Interprétation"]
-            classe    = df.iloc[idx]["Classe"]
+        geom         = feat["geometry"]
+        row          = df.iloc[idx]
+        interp       = row["Interpretation"]
+        color        = colorize(interp)
 
         tooltip_html = (
-            f"<b>Ilot :</b> {df.iloc[idx]['NUM_ILOT']}<br>"
-            f"<b>NDVI :</b> {ndvi_txt}<br>"
-            f"<b>EVI2 :</b> {evi2_txt}<br>"
-            f"<b>Classe :</b> {classe}<br>"
+            f"<b>Ilot :</b> {row['NUM_ILOT']}<br>"
             f"<b>Interprétation :</b> {interp}<br>"
-            f"<b>Qualité pixels :</b> {df.iloc[idx]['Qualite_pixels']}"
+            f"<b>Couvert :</b> {row['Couvert']}<br>"
+            f"<b>NDVI :</b> {fmt(row['NDVI_moyen'])}<br>"
+            f"<b>EVI2 :</b> {fmt(row['EVI2_moyen'])}<br>"
+            f"<b>NDTI :</b> {fmt(row['NDTI_moyen'])}<br>"
+            f"<b>Qualité pixels :</b> {row['Qualite_pixels']}"
         )
 
         folium.GeoJson(
