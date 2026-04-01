@@ -130,16 +130,19 @@ def get_latest_s2_image(aoi, features, max_days=30):
 # dérivée (bbox arrondie + nb parcelles) calculée côté appelant.
 # ----------------------------------------------------------
 @st.cache_data(show_spinner="Recherche des dates disponibles…")
-def get_available_s2_dates(_aoi, features_cache_key, _features_geojson, max_days=120):
+def get_available_s2_dates(_aoi, features_cache_key, _features_geojson,
+                           start=None, end=None, max_days=120):
     """
     Paramètres préfixés _ : ignorés du hash Streamlit (non-hashables).
-    La clé de cache effective = features_cache_key + max_days.
+    Clé de cache effective = features_cache_key + start + end.
 
-    features_cache_key : str  — bbox arrondie + nb parcelles
-    _features_geojson  : list[dict] — géométries __geo_interface__
+    start / end : str "YYYY-MM-DD" — si non fournis, calcule depuis max_days.
     """
     today = datetime.date.today()
-    start = today - datetime.timedelta(days=max_days)
+    if start is None:
+        start = str(today - datetime.timedelta(days=max_days))
+    if end is None:
+        end = str(today)
 
     geoms_ee = [ee.Geometry(g) for g in _features_geojson]
     geom_ee  = geoms_ee[0]
@@ -154,7 +157,7 @@ def get_available_s2_dates(_aoi, features_cache_key, _features_geojson, max_days
         col = (
             ee.ImageCollection(colname)
             .filterBounds(geom_ee)
-            .filterDate(str(start), str(today))
+            .filterDate(start, end)
         )
         timestamps = col.aggregate_array("system:time_start").getInfo()
         for t in timestamps:
