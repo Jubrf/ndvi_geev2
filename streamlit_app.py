@@ -254,9 +254,13 @@ if img is not None and d is not None:
     except Exception as e:
         st.write(f"DEBUG pixels erreur :", str(e))
 
-    # ── reduceRegions : 1 seul appel GEE pour toutes les parcelles ──
+    # ── reduceRegions : appels GEE pour toutes les parcelles ──
     with st.spinner("Calcul des stats zonales en cours…"):
-        stats = zonal_stats_all(ndvi, evi2, veg_mask, features)
+        try:
+            stats = zonal_stats_all(ndvi, evi2, veg_mask, features)
+        except Exception as e:
+            st.error(f"❌ Erreur zonal_stats_all : {e}")
+            st.stop()
 
     rows = []
     for feat, s in zip(features, stats):
