@@ -201,26 +201,14 @@ def compute_vegetation_mask(ndvi_img, threshold=0.25):
 def compute_evi2(img):
     """
     EVI2 = 2.5 * (NIR - RED) / (NIR + 2.4*RED + 1)
-    Adapté Sentinel-2 (B8 = NIR, B4 = RED)
+    Sentinel-2 SR stocke les réflectances en entiers x10000.
+    On normalise B8 et B4 avant calcul pour que le terme +1
+    au dénominateur ait un effet correct (réflectances en [0,1]).
     """
-    nir = img.select("B8")
-    red = img.select("B4")
+    nir = img.select("B8").divide(10000)
+    red = img.select("B4").divide(10000)
     evi2 = nir.subtract(red).divide(
         nir.add(red.multiply(2.4)).add(1)
     ).multiply(2.5)
     return evi2.rename("EVI2")
 
-
-# ----------------------------------------------------------
-# NDTI (Normalized Difference Tillage Index)
-# ----------------------------------------------------------
-def compute_ndti(img):
-    """
-    NDTI = (B11 - B12) / (B11 + B12)
-    Sentinel-2 : B11 = SWIR1 (1610nm), B12 = SWIR2 (2190nm)
-    Valeurs typiques :
-      Sol nu          : négatif à ~0
-      Résidus culture : 0.05 – 0.20
-      Végétation verte: négatif (eau foliaire absorbe SWIR)
-    """
-    return img.normalizedDifference(["B11", "B12"]).rename("NDTI")
